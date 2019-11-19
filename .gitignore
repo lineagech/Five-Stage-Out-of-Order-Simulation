@@ -1,0 +1,6 @@
+simulator
+src/*.o
+.project
+.cproject
+.settings/
+.DS_Store
