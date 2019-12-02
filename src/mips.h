@@ -27,6 +27,11 @@
 #define SUBOP_SLT  0x2A
 #define SUBOP_SLTU 0x2B
 
+#define SUBOP_FLOAT_ADD_S 0x0
+#define SUBOP_FLOAT_SUB_S 0x1
+#define SUBOP_FLOAT_MULT_S 0x2
+#define SUBOP_FLOAT_DIV_S 0x3
+
 #define SUBOP_MFHI 0x10
 #define SUBOP_MTHI 0x11
 #define SUBOP_MFLO 0x12
@@ -62,5 +67,7 @@
 #define OP_SB    0x28
 #define OP_SH    0x29
 #define OP_SW    0x2b
-
+#define OP_FLOAT 0x11
+#define LW_FLOAT 0x31
+#define SW_FLOAT 0x39
 #endif

@@ -17,13 +17,28 @@
 
 /* debug */
 void printOp(Pipe_Op *op) {
-	if (op)
-		printf(
-				"OP (PC=%08x inst=%08x) src1=R%d (%08x) src2=R%d (%08x) dst=R%d valid %d (%08x) br=%d taken=%d dest=%08x mem=%d addr=%08x\n",
-				op->pc, op->instruction, op->reg_src1, op->reg_src1_value,
-				op->reg_src2, op->reg_src2_value, op->reg_dst,
-				op->reg_dst_value_ready, op->reg_dst_value, op->is_branch,
-				op->branch_taken, op->branch_dest, op->is_mem, op->mem_addr);
+	if (op) {
+		printf("OP (PC=%08x inst=%08x) ", op->pc, op->instruction);
+		if(op->reg_src1 < 32)
+			printf("src1=R%d (%08x) ", op->reg_src1, op->reg_src1_value);
+		else
+			printf("src1=F%d (%f) ", op->reg_src1,
+					*(reinterpret_cast<float*>(&op->reg_src1_value)));
+		if(op->reg_src2 < 32)
+			printf("src2=R%d (%08x) ", op->reg_src2, op->reg_src2_value);
+		else
+			printf("src2=F%d (%f) ", op->reg_src2,
+					*(reinterpret_cast<float*>(&op->reg_src2_value)));
+		if(op->reg_dst < 32)
+			printf("dst=R%d valid %d (%08x) ", op->reg_dst,
+					op->reg_dst_value_ready, op->reg_dst_value);
+		else
+			printf("dst=F%d valid %d (%f) ", op->reg_dst,
+					op->reg_dst_value_ready, *(reinterpret_cast<float*>(&op->reg_dst_value)));
+		printf("br=%d taken=%d dest=%08x mem=%d addr=%08x\n",
+				op->is_branch, op->branch_taken, op->branch_dest,
+				op->is_mem, op->mem_addr);
+	}
 	else
 		printf("(null)\n");
 }
@@ -37,6 +52,7 @@ PipeState::PipeState() :
 	//initialize the register file
 	for (int i = 0; i < 32; i++) {
 		REGS[i] = 0;
+		FP_REGS[i] = 0;
 	}
 	//initialize PC
 	PC = 0x00400000;
@@ -148,9 +164,15 @@ void PipeState::pipeStageWb() {
 
 	//if this instruction writes a register, do so now
 	if (op->reg_dst != -1 && op->reg_dst != 0) {
-		REGS[op->reg_dst] = op->reg_dst_value;
-
-		DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
+		if(op->reg_dst < 32) {
+			REGS[op->reg_dst] = op->reg_dst_value;
+			DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
+		}
+		else {
+			FP_REGS[op->reg_dst - 32] = op->reg_dst_value;
+			DPRINTF(DEBUG_PIPE, "F%d = %f\n", op->reg_dst,
+					*(reinterpret_cast<float*>(&op->reg_dst_value)));
+		}
 	}
 	//if this was a syscall, perform action
 	if (op->opcode == OP_SPECIAL && op->subop == SUBOP_SYSCALL) {
@@ -205,7 +227,8 @@ void PipeState::pipeStageMem() {
 	case OP_LH:
 	case OP_LHU:
 	case OP_LB:
-	case OP_LBU: {
+	case OP_LBU:
+	case LW_FLOAT: {
 		uint8_t* data = new uint8_t[4];
 		op->memPkt = new Packet(true, false, PacketTypeLoad,
 				(op->mem_addr & ~3), 4, data, currCycle);
@@ -226,7 +249,8 @@ void PipeState::pipeStageMem() {
 		break;
 	}
 
-	case OP_SW: {
+	case OP_SW:
+	case SW_FLOAT: {
 		uint32_t* data = new uint32_t;
 		*data = op->mem_value;
 		op->memPkt = new Packet(true, true, PacketTypeStore, (op->mem_addr), 4,
@@ -242,14 +266,6 @@ void PipeState::pipeStageMem() {
 }
 
 void PipeState::pipeStageExecute() {
-	//if a multiply/divide is in progress, decrement cycles until value is ready
-	if (execute_op && execute_op->stall > 0)
-		execute_op->stall--;
-
-	//if downstream stall, return (and leave any input we had)
-	if (mem_op != NULL)
-		return;
-
 	//if no op to execute, return
 	if (execute_op == NULL)
 		return;
@@ -269,8 +285,12 @@ void PipeState::pipeStageExecute() {
                 op->reg_src1_value = mem_op->reg_dst_value;
 		} else if (wb_op && wb_op->reg_dst == op->reg_src1) {
 			op->reg_src1_value = wb_op->reg_dst_value;
-		} else
-			op->reg_src1_value = REGS[op->reg_src1];
+		} else {
+			if(op->reg_src1 < 32)	// integer regs
+				op->reg_src1_value = REGS[op->reg_src1];
+			else 					// floating-point regs
+				op->reg_src1_value = FP_REGS[op->reg_src1 - 32];
+		}
 	}
 	if (op->reg_src2 != -1) {
 		if (op->reg_src2 == 0)
@@ -283,253 +303,277 @@ void PipeState::pipeStageExecute() {
 
 		} else if (wb_op && wb_op->reg_dst == op->reg_src2) {
 			 op->reg_src2_value = wb_op->reg_dst_value;
-		} else
-			op->reg_src2_value = REGS[op->reg_src2];
+		} else {
+			if(op->reg_src2 < 32)	// integer regs
+				op->reg_src2_value = REGS[op->reg_src2];
+			else 					// floating-point regs
+				op->reg_src2_value = FP_REGS[op->reg_src2 - 32];
+		}
 	}
 
 	//if requires a stall return without clearing stage input
 	if (stall)
 		return;
-	//execute the op
-	switch (op->opcode) {
-	case OP_SPECIAL:
-		op->reg_dst_value_ready = 1;
-		switch (op->subop) {
-		case SUBOP_SLL:
-			op->reg_dst_value = op->reg_src2_value << op->shamt;
-			break;
-		case SUBOP_SLLV:
-			op->reg_dst_value = op->reg_src2_value << op->reg_src1_value;
-			break;
-		case SUBOP_SRL:
-			op->reg_dst_value = op->reg_src2_value >> op->shamt;
-			break;
-		case SUBOP_SRLV:
-			op->reg_dst_value = op->reg_src2_value >> op->reg_src1_value;
-			break;
-		case SUBOP_SRA:
-			op->reg_dst_value = (int32_t) op->reg_src2_value >> op->shamt;
-			break;
-		case SUBOP_SRAV:
-			op->reg_dst_value = (int32_t) op->reg_src2_value
-					>> op->reg_src1_value;
-			break;
-		case SUBOP_JR:
-		case SUBOP_JALR:
-			op->reg_dst_value = op->pc + 4;
-			op->branch_dest = op->reg_src1_value;
-			op->branch_taken = 1;
-			break;
 
-		case SUBOP_MULT: {
-			/* we set a result value right away; however, we will
-			 * model a stall if the program tries to read the value
-			 * before it's ready (or overwrite HI/LO). Also, if
-			 * another multiply comes down the pipe later, it will
-			 * update the values and re-set the stall cycle count
-			 * for a new operation.
-			 */
-			int64_t val = (int64_t) ((int32_t) op->reg_src1_value)
-					* (int64_t) ((int32_t) op->reg_src2_value);
-			uint64_t uval = (uint64_t) val;
-			HI = (uval >> 32) & 0xFFFFFFFF;
-			LO = (uval >> 0) & 0xFFFFFFFF;
-
-			//four-cycle multiplier latency
-			op->stall = 4;
-		}
-			break;
-		case SUBOP_MULTU: {
-			uint64_t val = (uint64_t) op->reg_src1_value
-					* (uint64_t) op->reg_src2_value;
-			HI = (val >> 32) & 0xFFFFFFFF;
-			LO = (val >> 0) & 0xFFFFFFFF;
-
-			//four-cycle multiplier latency
-			op->stall = 4;
-		}
-			break;
-
-		case SUBOP_DIV:
-			if (op->reg_src2_value != 0) {
-
-				int32_t val1 = (int32_t) op->reg_src1_value;
-				int32_t val2 = (int32_t) op->reg_src2_value;
-				int32_t div, mod;
-
-				div = val1 / val2;
-				mod = val1 % val2;
-
-				LO = div;
-				HI = mod;
-			} else {
-				//really this would be a div-by-0 exception
-				HI = LO = 0;
-			}
-
-			//2-cycle divider latency
-			op->stall = 32;
-			break;
-
-		case SUBOP_DIVU:
-			if (op->reg_src2_value != 0) {
-				HI = (uint32_t) op->reg_src1_value
-						% (uint32_t) op->reg_src2_value;
-				LO = (uint32_t) op->reg_src1_value
-						/ (uint32_t) op->reg_src2_value;
-			} else {
-				/* really this would be a div-by-0 exception */
-				HI = LO = 0;
-			}
-
-			/* 32-cycle divider latency */
-			op->stall = 32;
-			break;
-
-		case SUBOP_MFHI:
-			/* stall until value is ready */
-			if (op->stall > 0)
-				return;
-
-			op->reg_dst_value = HI;
-			break;
-		case SUBOP_MTHI:
-			//stall to respect WAW dependence
-			if (op->stall > 0)
-				return;
-
-			HI = op->reg_src1_value;
-			break;
-
-		case SUBOP_MFLO:
-			//stall until value is ready
-			if (op->stall > 0)
-				return;
-
-			op->reg_dst_value = LO;
-			break;
-		case SUBOP_MTLO:
-			//stall to respect WAW dependence
-			if (op->stall > 0)
-				return;
-
-			LO = op->reg_src1_value;
-			break;
-
-		case SUBOP_ADD:
-		case SUBOP_ADDU:
-			op->reg_dst_value = op->reg_src1_value + op->reg_src2_value;
-			break;
-		case SUBOP_SUB:
-		case SUBOP_SUBU:
-			op->reg_dst_value = op->reg_src1_value - op->reg_src2_value;
-			break;
-		case SUBOP_AND:
-			op->reg_dst_value = op->reg_src1_value & op->reg_src2_value;
-			break;
-		case SUBOP_OR:
-			op->reg_dst_value = op->reg_src1_value | op->reg_src2_value;
-			break;
-		case SUBOP_NOR:
-			op->reg_dst_value = ~(op->reg_src1_value | op->reg_src2_value);
-			break;
-		case SUBOP_XOR:
-			op->reg_dst_value = op->reg_src1_value ^ op->reg_src2_value;
-			break;
-		case SUBOP_SLT:
-			op->reg_dst_value =
-					((int32_t) op->reg_src1_value < (int32_t) op->reg_src2_value) ?
-							1 : 0;
-			break;
-		case SUBOP_SLTU:
-			op->reg_dst_value =
-					(op->reg_src1_value < op->reg_src2_value) ? 1 : 0;
-			break;
-		}
-		break;
-
-	case OP_BRSPEC:
-		switch (op->subop) {
-		case BROP_BLTZ:
-		case BROP_BLTZAL:
-			if ((int32_t) op->reg_src1_value < 0)
+	if(op->isExecuted == false) {
+		op->isExecuted = true;
+		//execute the op
+		switch (op->opcode) {
+		case OP_SPECIAL:
+			op->reg_dst_value_ready = 1;
+			switch (op->subop) {
+			case SUBOP_SLL:
+				op->reg_dst_value = op->reg_src2_value << op->shamt;
+				break;
+			case SUBOP_SLLV:
+				op->reg_dst_value = op->reg_src2_value << op->reg_src1_value;
+				break;
+			case SUBOP_SRL:
+				op->reg_dst_value = op->reg_src2_value >> op->shamt;
+				break;
+			case SUBOP_SRLV:
+				op->reg_dst_value = op->reg_src2_value >> op->reg_src1_value;
+				break;
+			case SUBOP_SRA:
+				op->reg_dst_value = (int32_t) op->reg_src2_value >> op->shamt;
+				break;
+			case SUBOP_SRAV:
+				op->reg_dst_value = (int32_t) op->reg_src2_value
+				>> op->reg_src1_value;
+				break;
+			case SUBOP_JR:
+			case SUBOP_JALR:
+				op->reg_dst_value = op->pc + 4;
+				op->branch_dest = op->reg_src1_value;
 				op->branch_taken = 1;
+				break;
+
+			case SUBOP_MULT: {
+				/* we set a result value right away; however, we will
+				 * model a stall if the program tries to read the value
+				 * before it's ready (or overwrite HI/LO). Also, if
+				 * another multiply comes down the pipe later, it will
+				 * update the values and re-set the stall cycle count
+				 * for a new operation.
+				 */
+				int64_t val = (int64_t) ((int32_t) op->reg_src1_value)
+							* (int64_t) ((int32_t) op->reg_src2_value);
+				uint64_t uval = (uint64_t) val;
+				HI = (uval >> 32) & 0xFFFFFFFF;
+				LO = (uval >> 0) & 0xFFFFFFFF;
+
+				//four-cycle multiplier latency
+				op->stall = 4;
+			}
+			break;
+			case SUBOP_MULTU: {
+				uint64_t val = (uint64_t) op->reg_src1_value
+						* (uint64_t) op->reg_src2_value;
+				HI = (val >> 32) & 0xFFFFFFFF;
+				LO = (val >> 0) & 0xFFFFFFFF;
+
+				//four-cycle multiplier latency
+				op->stall = 4;
+			}
 			break;
 
-		case BROP_BGEZ:
-		case BROP_BGEZAL:
-			if ((int32_t) op->reg_src1_value >= 0)
-				op->branch_taken = 1;
+			case SUBOP_DIV:
+				if (op->reg_src2_value != 0) {
+
+					int32_t val1 = (int32_t) op->reg_src1_value;
+					int32_t val2 = (int32_t) op->reg_src2_value;
+					int32_t div, mod;
+
+					div = val1 / val2;
+					mod = val1 % val2;
+
+					LO = div;
+					HI = mod;
+				} else {
+					//really this would be a div-by-0 exception
+					HI = LO = 0;
+				}
+
+				//2-cycle divider latency
+				op->stall = 32;
+				break;
+
+			case SUBOP_DIVU:
+				if (op->reg_src2_value != 0) {
+					HI = (uint32_t) op->reg_src1_value
+							% (uint32_t) op->reg_src2_value;
+					LO = (uint32_t) op->reg_src1_value
+							/ (uint32_t) op->reg_src2_value;
+				} else {
+					/* really this would be a div-by-0 exception */
+					HI = LO = 0;
+				}
+
+				/* 32-cycle divider latency */
+				op->stall = 32;
+				break;
+
+			case SUBOP_MFHI:
+				op->reg_dst_value = HI;
+				break;
+			case SUBOP_MTHI:
+				HI = op->reg_src1_value;
+				break;
+
+			case SUBOP_MFLO:
+				op->reg_dst_value = LO;
+				break;
+			case SUBOP_MTLO:
+				LO = op->reg_src1_value;
+				break;
+
+			case SUBOP_ADD:
+			case SUBOP_ADDU:
+				op->reg_dst_value = op->reg_src1_value + op->reg_src2_value;
+				break;
+			case SUBOP_SUB:
+			case SUBOP_SUBU:
+				op->reg_dst_value = op->reg_src1_value - op->reg_src2_value;
+				break;
+			case SUBOP_AND:
+				op->reg_dst_value = op->reg_src1_value & op->reg_src2_value;
+				break;
+			case SUBOP_OR:
+				op->reg_dst_value = op->reg_src1_value | op->reg_src2_value;
+				break;
+			case SUBOP_NOR:
+				op->reg_dst_value = ~(op->reg_src1_value | op->reg_src2_value);
+				break;
+			case SUBOP_XOR:
+				op->reg_dst_value = op->reg_src1_value ^ op->reg_src2_value;
+				break;
+			case SUBOP_SLT:
+				op->reg_dst_value =
+						((int32_t) op->reg_src1_value < (int32_t) op->reg_src2_value) ?
+								1 : 0;
+				break;
+			case SUBOP_SLTU:
+				op->reg_dst_value =
+						(op->reg_src1_value < op->reg_src2_value) ? 1 : 0;
+				break;
+			}
 			break;
+
+			case OP_FLOAT:
+			{
+				op->reg_dst_value_ready = 1;
+				float src1_value = *(reinterpret_cast<float*>(&op->reg_src1_value));
+				float src2_value = *(reinterpret_cast<float*>(&op->reg_src2_value));
+				float dst_value;
+				switch(op->subop) {
+				case SUBOP_FLOAT_ADD_S:
+					dst_value = src1_value + src2_value;
+					op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+					op->stall = 4;
+					break;
+				case SUBOP_FLOAT_SUB_S:
+					dst_value = src1_value - src2_value;
+					op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+					op->stall = 4;
+					break;
+				case SUBOP_FLOAT_MULT_S:
+					dst_value = src1_value * src2_value;
+					op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+					op->stall = 16;
+					break;
+				case SUBOP_FLOAT_DIV_S:
+					dst_value = src1_value / src2_value;
+					op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+					op->stall = 64;
+					break;
+				}
+			}
+			break;
+			case OP_BRSPEC:
+				switch (op->subop) {
+				case BROP_BLTZ:
+				case BROP_BLTZAL:
+					if ((int32_t) op->reg_src1_value < 0)
+						op->branch_taken = 1;
+					break;
+
+				case BROP_BGEZ:
+				case BROP_BGEZAL:
+					if ((int32_t) op->reg_src1_value >= 0)
+						op->branch_taken = 1;
+					break;
+				}
+				break;
+
+				case OP_BEQ:
+					if (op->reg_src1_value == op->reg_src2_value)
+						op->branch_taken = 1;
+					break;
+
+				case OP_BNE:
+					if (op->reg_src1_value != op->reg_src2_value)
+						op->branch_taken = 1;
+					break;
+
+				case OP_BLEZ:
+					if ((int32_t) op->reg_src1_value <= 0)
+						op->branch_taken = 1;
+					break;
+
+				case OP_BGTZ:
+					if ((int32_t) op->reg_src1_value > 0)
+						op->branch_taken = 1;
+					break;
+
+				case OP_ADDI:
+				case OP_ADDIU:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value = op->reg_src1_value + op->se_imm16;
+					break;
+				case OP_SLTI:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value =
+							(int32_t) op->reg_src1_value < (int32_t) op->se_imm16 ? 1 : 0;
+					break;
+				case OP_SLTIU:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value =
+							(uint32_t) op->reg_src1_value < (uint32_t) op->se_imm16 ? 1 : 0;
+					break;
+				case OP_ANDI:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value = op->reg_src1_value & op->imm16;
+					break;
+				case OP_ORI:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value = op->reg_src1_value | op->imm16;
+					break;
+				case OP_XORI:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value = op->reg_src1_value ^ op->imm16;
+					break;
+				case OP_LUI:
+					op->reg_dst_value_ready = 1;
+					op->reg_dst_value = op->imm16 << 16;
+					break;
+
+				case OP_LW:
+				case OP_LH:
+				case OP_LHU:
+				case OP_LB:
+				case OP_LBU:
+				case LW_FLOAT:
+					op->mem_addr = op->reg_src1_value + op->se_imm16;
+					break;
+
+				case OP_SW:
+				case OP_SH:
+				case OP_SB:
+				case SW_FLOAT:
+					op->mem_addr = op->reg_src1_value + op->se_imm16;
+					op->mem_value = op->reg_src2_value;
+					break;
 		}
-		break;
-
-	case OP_BEQ:
-		if (op->reg_src1_value == op->reg_src2_value)
-			op->branch_taken = 1;
-		break;
-
-	case OP_BNE:
-		if (op->reg_src1_value != op->reg_src2_value)
-			op->branch_taken = 1;
-		break;
-
-	case OP_BLEZ:
-		if ((int32_t) op->reg_src1_value <= 0)
-			op->branch_taken = 1;
-		break;
-
-	case OP_BGTZ:
-		if ((int32_t) op->reg_src1_value > 0)
-			op->branch_taken = 1;
-		break;
-
-	case OP_ADDI:
-	case OP_ADDIU:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value = op->reg_src1_value + op->se_imm16;
-		break;
-	case OP_SLTI:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value =
-				(int32_t) op->reg_src1_value < (int32_t) op->se_imm16 ? 1 : 0;
-		break;
-	case OP_SLTIU:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value =
-				(uint32_t) op->reg_src1_value < (uint32_t) op->se_imm16 ? 1 : 0;
-		break;
-	case OP_ANDI:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value = op->reg_src1_value & op->imm16;
-		break;
-	case OP_ORI:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value = op->reg_src1_value | op->imm16;
-		break;
-	case OP_XORI:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value = op->reg_src1_value ^ op->imm16;
-		break;
-	case OP_LUI:
-		op->reg_dst_value_ready = 1;
-		op->reg_dst_value = op->imm16 << 16;
-		break;
-
-	case OP_LW:
-	case OP_LH:
-	case OP_LHU:
-	case OP_LB:
-	case OP_LBU:
-		op->mem_addr = op->reg_src1_value + op->se_imm16;
-		break;
-
-	case OP_SW:
-	case OP_SH:
-	case OP_SB:
-		op->mem_addr = op->reg_src1_value + op->se_imm16;
-		op->mem_value = op->reg_src2_value;
-		break;
 	}
 
 	//update the branch predictor metadata
@@ -537,6 +581,15 @@ void PipeState::pipeStageExecute() {
 	//handle branch recoveries at this point
 	if (op->branch_taken)
 		pipeRecover(3, op->branch_dest);
+
+	if(op->stall) {
+		op->stall--;
+		return;
+	}
+
+	//if downstream stall, return (and leave any input we had)
+	if (mem_op != NULL)
+		return;
 
 	//remove from upstream stage and place in downstream stage
 	execute_op = NULL;
@@ -561,6 +614,9 @@ void PipeState::pipeStageDecode() {
 	uint32_t rs = (op->instruction >> 21) & 0x1F;
 	uint32_t rt = (op->instruction >> 16) & 0x1F;
 	uint32_t rd = (op->instruction >> 11) & 0x1F;
+	uint32_t ft = (op->instruction >> 16) & 0x1F;
+	uint32_t fs = (op->instruction >> 11) & 0x1F;
+	uint32_t fd = (op->instruction >> 6) & 0x1F;
 	uint32_t shamt = (op->instruction >> 6) & 0x1F;
 	uint32_t funct1 = (op->instruction >> 0) & 0x1F;
 	uint32_t funct2 = (op->instruction >> 0) & 0x3F;
@@ -591,7 +647,15 @@ void PipeState::pipeStageDecode() {
 		}
 
 		break;
-
+	case OP_FLOAT:
+		/* all "FLOAT" insts are R-types that use the ALU and both source
+		 * regs. Set up source regs and immediate value. */
+		assert(rs == 0x10);
+		op->reg_src1 = fs + 32;
+		op->reg_src2 = ft + 32;
+		op->reg_dst = fd + 32;
+		op->subop = funct2;
+		break;
 	case OP_BRSPEC:
 		//branches that have -and-link variants come here
 		op->is_branch = 1;
@@ -674,6 +738,20 @@ void PipeState::pipeStageDecode() {
 			op->reg_src2 = rt;
 		}
 		break;
+	case LW_FLOAT:
+	case SW_FLOAT:
+		op->is_mem = 1;
+		op->reg_src1 = rs;
+		if (opcode == LW_FLOAT) {
+			//load
+			op->mem_write = 0;
+			op->reg_dst = rt + 32;
+		} else {
+			//store
+			op->mem_write = 1;
+			op->reg_src2 = rt + 32;
+		}
+		break;
 	}
 
 	// place op in downstream slot
@@ -745,7 +823,7 @@ void PipeState::recvResp(Packet* pkt) {
 			uint32_t val = *((uint32_t*) pkt->data);
 			//extract needed value
 			mem_op->reg_dst_value_ready = 1;
-			if (mem_op->opcode == OP_LW) {
+			if (mem_op->opcode == OP_LW || mem_op->opcode == LW_FLOAT) {
 				mem_op->reg_dst_value = val;
 			} else if (mem_op->opcode == OP_LH || mem_op->opcode == OP_LHU) {
 				if (mem_op->mem_addr & 2)

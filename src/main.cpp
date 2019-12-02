@@ -119,6 +119,7 @@ void help() {
 			"registerDump                  -  dump architectural registers      \n");
 	printf("memDump low high         -  dump memory from low to high      \n");
 	printf("input reg_no reg_value - set GPR reg_no to reg_value  \n");
+	printf("floating_input reg_no reg_value - set FPR reg_no to reg_value  \n");
 	printf("?                      -  display this help menu            \n");
 	printf("quit                   -  exit the program                  \n\n");
 }
@@ -183,6 +184,15 @@ bool getCommand() {
 
 		printf("%i %i\n", register_no, register_value);
 		simulator->pipe->REGS[register_no] = register_value;
+		break;
+
+	case 'F':
+	case 'f':
+		if (scanf("%i %i", &register_no, &register_value) != 2)
+			break;
+
+		printf("%i %i\n", register_no, register_value);
+		simulator->pipe->FP_REGS[register_no] = register_value;
 		break;
 
 	case 'H':
