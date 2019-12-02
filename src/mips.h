@@ -62,5 +62,8 @@
 #define OP_SB    0x28
 #define OP_SH    0x29
 #define OP_SW    0x2b
+#define OP_FLOAT 0x11
+#define LW_FLOAT 0x31
+#define SW_FLOAT 0x39
 
 #endif
