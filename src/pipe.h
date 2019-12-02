@@ -13,6 +13,9 @@
 #include "abstract_memory.h"
 #include "base_object.h"
 
+// FIX_CHIA-HAO
+#define FETCH_INST_NUM 4
+
 /* Pipeline ops (instances of this structure) are high-level representations of
  * the instructions that actually flow through the pipeline. This struct does
  * not correspond 1-to-1 with the control signals that would actually pass
@@ -22,8 +25,20 @@ typedef struct Pipe_Op {
 	//PC of this instruction
 	uint32_t pc;
 	//raw instruction */
-	uint32_t instruction;
-	//decoded opcode and subopcode fields
+	uint32_t instruction[FETCH_INST_NUM];
+	
+    // FIX_CHIA-HAO
+    bool inst_decoded_done[FETCH_INST_NUM];
+    int reg_phy_src1;
+    int reg_phy_src1_value;
+    int reg_phy_src2;
+    int reg_phy_src2_value;
+    int reg_phy_dst;
+    int reg_phy_dst_overwritten;
+    bool reg_phy_src1_ready;
+    bool reg_phy_src2_ready;
+
+    //decoded opcode and subopcode fields
 	int opcode, subop;
 	//immediate value, if any, for ALU immediates
 	uint32_t imm16, se_imm16;

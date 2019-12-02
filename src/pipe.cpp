@@ -15,6 +15,17 @@
 #include <cassert>
 #include "util.h"
 
+#include "ooo_data_structures.h"
+
+#define OP_DEC_DONE(op) (op->inst_decoded_done[0] && op->inst_decoded_done[1] && op->inst_decoded_done[2] && op->inst_decoded_done[3]) 
+
+static MapTable mapTable;
+static FreeList freeList(64);
+static RS reservStation;
+static ROB reorderedBuffer(8);
+static LSQ ldstQueue(4);
+static ArchMap archMap;
+
 /* debug */
 void printOp(Pipe_Op *op) {
 	if (op)
@@ -545,144 +556,272 @@ void PipeState::pipeStageExecute() {
 
 void PipeState::pipeStageDecode() {
 	//if downstream stall, return (and leave any input we had)
-	if (execute_op != NULL)
-		return;
+	//if (execute_op != NULL)
+	//	return;
 
 	//if no op to decode, return
-	if (decode_op == NULL)
+	// FIX_CHIA-HAO: now you have 4 instructions in decode_op
+    if (decode_op == NULL)
 		return;
 
 	//grab op and remove from stage input
 	Pipe_Op *op = decode_op;
-	decode_op = NULL;
+	// FIX_CHIA-HAO: when all of 4 instructions are decoded, decode_op will be set as NULL
+    //decode_op = NULL;
+    for (int i = 0; i < FETCH_INST_NUM; i++) {
+        if (!op->inst_decoded_done[i]) {
+            //set up info fields (source/dest regs, immediate, jump dest) as necessary
+            uint32_t opcode = (op->instruction[i] >> 26) & 0x3F;
+            uint32_t rs = (op->instruction[i] >> 21) & 0x1F;    
+            uint32_t rt = (op->instruction[i] >> 16) & 0x1F;
+            uint32_t rd = (op->instruction[i] >> 11) & 0x1F;
+            uint32_t shamt = (op->instruction[i] >> 6) & 0x1F;
+            uint32_t funct1 = (op->instruction[i] >> 0) & 0x1F;
+            uint32_t funct2 = (op->instruction[i] >> 0) & 0x3F;
+            uint32_t imm16 = (op->instruction[i] >> 0) & 0xFFFF;
+            uint32_t se_imm16 = imm16 | ((imm16 & 0x8000) ? 0xFFFF8000 : 0);
+            uint32_t targ = (op->instruction[i] & ((1UL << 26) - 1)) << 2;
 
-	//set up info fields (source/dest regs, immediate, jump dest) as necessary
-	uint32_t opcode = (op->instruction >> 26) & 0x3F;
-	uint32_t rs = (op->instruction >> 21) & 0x1F;
-	uint32_t rt = (op->instruction >> 16) & 0x1F;
-	uint32_t rd = (op->instruction >> 11) & 0x1F;
-	uint32_t shamt = (op->instruction >> 6) & 0x1F;
-	uint32_t funct1 = (op->instruction >> 0) & 0x1F;
-	uint32_t funct2 = (op->instruction >> 0) & 0x3F;
-	uint32_t imm16 = (op->instruction >> 0) & 0xFFFF;
-	uint32_t se_imm16 = imm16 | ((imm16 & 0x8000) ? 0xFFFF8000 : 0);
-	uint32_t targ = (op->instruction & ((1UL << 26) - 1)) << 2;
+            op->opcode = opcode;
+            op->imm16 = imm16;
+            op->se_imm16 = se_imm16;
+            op->shamt = shamt;
+            
+            // FIX_CHIA-HAO: initialize to -1 first
+            op->reg_src1 = -1;
+            op->reg_src2 = -1;
+            op->reg_dst = -1;
+            op->reg_phy_src1 = -1;
+            op->reg_phy_src2 = -1;
+            op->reg_phy_dst = -1;
 
-	op->opcode = opcode;
-	op->imm16 = imm16;
-	op->se_imm16 = se_imm16;
-	op->shamt = shamt;
+            RS_OP rs_op = INVALID;
 
-	switch (opcode) {
-	case OP_SPECIAL:
-		/* all "SPECIAL" insts are R-types that use the ALU and both source
-		 * regs. Set up source regs and immediate value. */
-		op->reg_src1 = rs;
-		op->reg_src2 = rt;
-		op->reg_dst = rd;
-		op->subop = funct2;
-		if (funct2 == SUBOP_SYSCALL) {
-			op->reg_src1 = 2; // v0
-			op->reg_src2 = 3; // v1
-		}
-		if (funct2 == SUBOP_JR || funct2 == SUBOP_JALR) {
-			op->is_branch = 1;
-			op->branch_cond = 0;
-		}
+            switch (opcode) {
+            case OP_SPECIAL:
+                /* all "SPECIAL" insts are R-types that use the ALU and both source
+                 * regs. Set up source regs and immediate value. */
+                op->reg_src1 = rs;
+                op->reg_src2 = rt;
+                op->reg_dst = rd;
+                op->subop = funct2;
+                if (funct2 == SUBOP_SYSCALL) {
+                    op->reg_src1 = 2; // v0
+                    op->reg_src2 = 3; // v1
+                }
+                if (funct2 == SUBOP_JR || funct2 == SUBOP_JALR) {
+                    op->is_branch = 1;
+                    op->branch_cond = 0;
+                }
+                
+                rs_op = INT_ALU1;
 
-		break;
+                break;
 
-	case OP_BRSPEC:
-		//branches that have -and-link variants come here
-		op->is_branch = 1;
-		op->reg_src1 = rs;
-		op->reg_src2 = rt;
-		op->is_branch = 1;
-		op->branch_cond = 1; /* conditional branch */
-		op->branch_dest = op->pc + 4 + (se_imm16 << 2);
-		op->subop = rt;
-		if (rt == BROP_BLTZAL || rt == BROP_BGEZAL) {
-			/* link reg */
-			op->reg_dst = 31;
-			op->reg_dst_value = op->pc + 4;
-			op->reg_dst_value_ready = 1;
-		}
-		break;
+            case OP_BRSPEC:
+                //branches that have -and-link variants come here
+                op->is_branch = 1;
+                op->reg_src1 = rs;
+                op->reg_src2 = rt;
+                op->is_branch = 1;
+                op->branch_cond = 1; /* conditional branch */
+                op->branch_dest = op->pc + 4 + (se_imm16 << 2);
+                op->subop = rt;
+                if (rt == BROP_BLTZAL || rt == BROP_BGEZAL) {
+                    /* link reg */
+                    op->reg_dst = 31;
+                    op->reg_dst_value = op->pc + 4;
+                    op->reg_dst_value_ready = 1;
+                }
 
-	case OP_JAL:
-		op->reg_dst = 31;
-		op->reg_dst_value = op->pc + 4;
-		op->reg_dst_value_ready = 1;
-		op->branch_taken = 1;
-		//fallthrough
-	case OP_J:
-		op->is_branch = 1;
-		op->branch_cond = 0;
-		op->branch_taken = 1;
-		op->branch_dest = (op->pc & 0xF0000000) | targ;
-		break;
+                rs_op = INT_ALU1;
 
-	case OP_BEQ:
-	case OP_BNE:
-	case OP_BLEZ:
-	case OP_BGTZ:
-		//ordinary conditional branches (resolved after execute)
-		op->is_branch = 1;
-		op->branch_cond = 1;
-		op->branch_dest = op->pc + 4 + (se_imm16 << 2);
-		op->reg_src1 = rs;
-		op->reg_src2 = rt;
-		break;
+                break;
 
-	case OP_ADDI:
-	case OP_ADDIU:
-	case OP_SLTI:
-	case OP_SLTIU:
-		//I-type ALU ops with sign-extended immediates
-		op->reg_src1 = rs;
-		op->reg_dst = rt;
-		break;
+            case OP_JAL:
+                op->reg_dst = 31;
+                op->reg_dst_value = op->pc + 4;
+                op->reg_dst_value_ready = 1;
+                op->branch_taken = 1;
+                //fallthrough
+            case OP_J:
+                op->is_branch = 1;
+                op->branch_cond = 0;
+                op->branch_taken = 1;
+                op->branch_dest = (op->pc & 0xF0000000) | targ;
+                
+                rs_op = INT_ALU1;
+                
+                break;
 
-	case OP_ANDI:
-	case OP_ORI:
-	case OP_XORI:
-	case OP_LUI:
-		//I-type ALU ops with non-sign-extended immediates
-		op->reg_src1 = rs;
-		op->reg_dst = rt;
-		break;
+            case OP_BEQ:
+            case OP_BNE:
+            case OP_BLEZ:
+            case OP_BGTZ:
+                //ordinary conditional branches (resolved after execute)
+                op->is_branch = 1;
+                op->branch_cond = 1;
+                op->branch_dest = op->pc + 4 + (se_imm16 << 2);
+                op->reg_src1 = rs;
+                op->reg_src2 = rt;
+                
+                rs_op = INT_ALU1;
 
-	case OP_LW:
-	case OP_LH:
-	case OP_LHU:
-	case OP_LB:
-	case OP_LBU:
-	case OP_SW:
-	case OP_SH:
-	case OP_SB:
-		//memory ops
-		op->is_mem = 1;
-		op->reg_src1 = rs;
-		if (opcode == OP_LW || opcode == OP_LH || opcode == OP_LHU
-				|| opcode == OP_LB || opcode == OP_LBU) {
-			//load
-			op->mem_write = 0;
-			op->reg_dst = rt;
-		} else {
-			//store
-			op->mem_write = 1;
-			op->reg_src2 = rt;
-		}
-		break;
-	}
+                break;
 
-	// place op in downstream slot
-	execute_op = op;
+            case OP_ADDI:
+            case OP_ADDIU:
+            case OP_SLTI:
+            case OP_SLTIU:
+                //I-type ALU ops with sign-extended immediates
+                op->reg_src1 = rs;
+                op->reg_dst = rt;
+                
+                rs_op = INT_ALU1;
+                
+                break;
+
+            case OP_ANDI:
+            case OP_ORI:
+            case OP_XORI:
+            case OP_LUI:
+                //I-type ALU ops with non-sign-extended immediates
+                op->reg_src1 = rs;
+                op->reg_dst = rt;
+                
+                rs_op = INT_ALU1;
+                
+                break;
+
+            case OP_LW:
+            case OP_LH:
+            case OP_LHU:
+            case OP_LB:
+            case OP_LBU:
+            case OP_SW:
+            case OP_SH:
+            case OP_SB:
+                //memory ops
+                op->is_mem = 1;
+                op->reg_src1 = rs;
+                if (opcode == OP_LW || opcode == OP_LH || opcode == OP_LHU
+                        || opcode == OP_LB || opcode == OP_LBU) {
+                    //load
+                    op->mem_write = 0;
+                    op->reg_dst = rt;
+                    rs_op = LOAD;
+                } else {
+                    //store
+                    op->mem_write = 1;
+                    op->reg_src2 = rt;
+                    rs_op = STORE;
+                }
+                break;
+            }
+                
+            /* get src physical register */
+            if (op->reg_src1 != -1) {
+                op->reg_phy_src1 = mapTable.regMap[op->reg_src1];
+                op->reg_phy_src1_ready = mapTable.ready[op->reg_src1];
+            }
+            else {
+                op->reg_phy_src1_ready = true;
+            }
+
+            if (op->reg_src2 != -1) {
+                op->reg_phy_src2 = mapTable.regMap[op->reg_src2];
+                op->reg_phy_src2_ready = mapTable.ready[op->reg_src2];
+            }
+            else {
+                op->reg_phy_src2_ready = true;
+            }
+
+            /* Request free physical registers for dst register */
+            int reg_phy_dst = freeList.getNextFreeReg();
+            if (reg_phy_dst == -1) 
+                continue;
+            else {
+               op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
+               op->reg_phy_dst = reg_phy_dst;
+            }
+
+            /* Allocate RS */
+            if (rs_op == INT_ALU1) {
+                if (reservStation.rs_entries[INT_ALU1].busy) {
+                    if (reservStation.rs_entries[INT_ALU2].busy) {
+                        continue; 
+                    }
+                    else {
+                        rs_op = INT_ALU2;
+                    }
+                }
+            }
+            else {
+                if (reservStation.rs_entries[rs_op].busy) {
+                    continue;
+                }
+            }
+            
+            /* Allocate ROB */
+            int ROB_avail_index = reorderedBuffer.getNextAvail();
+            if (ROB_avail_index == -1) continue;
+                
+            /* Allocate LSQ if needed */
+            int LSQ_avail_index;    
+            if (rs_op == LOAD || rs_op == STORE) {
+                if ((LSQ_avail_index=ldstQueue.getLSQAvail()) == -1) { // full
+                    continue;
+                }
+            } 
+
+            /* Update everything */
+            Pipe_Op *op_ptr = (Pipe_Op*)malloc(sizeof(Pipe_Op));
+            memcpy(op_ptr, op, sizeof(Pipe_Op));
+            /* Update LSQ, push to LSQ */
+            if (rs_op == LOAD || rs_op == STORE) {
+                ldstQueue.size++;
+                ldstQueue.tail = LSQ_avail_index;
+                ldstQueue.lsq_entries[LSQ_avail_index] = (void*)op_ptr;
+            }
+            /* Update Free list */ 
+            freeList.isFree[op->reg_phy_dst] = false;
+            /* Update Map Table */
+            mapTable.regMap[op->reg_dst] = op->reg_phy_dst;
+            /* Update Reservation Stations */
+            reservStation.rs_entries[rs_op].busy = true;
+            reservStation.rs_entries[rs_op].op_ptr = (void*)op_ptr;
+            reservStation.rs_entries[rs_op].output_reg = op->reg_phy_dst;
+            reservStation.rs_entries[rs_op].overwritten_reg = op->reg_phy_dst_overwritten;
+            reservStation.rs_entries[rs_op].src_reg1 = op->reg_phy_src1;
+            reservStation.rs_entries[rs_op].src_reg2 = op->reg_phy_src2;
+            reservStation.rs_entries[rs_op].src_reg1_ready = op->reg_phy_src1_ready;
+            reservStation.rs_entries[rs_op].src_reg2_ready = op->reg_phy_src2_ready;
+            /* Update Reorder Buffer */
+            reorderedBuffer.num_entries++;
+            reorderedBuffer.tail = ROB_avail_index;
+            reorderedBuffer.occupied[ROB_avail_index] = true;
+            reorderedBuffer.ROB_entries[ROB_avail_index].op_ptr = (void*)op_ptr;
+            reorderedBuffer.ROB_entries[ROB_avail_index].output_reg = op->reg_phy_dst;
+            reorderedBuffer.ROB_entries[ROB_avail_index].overwritten_reg = op->reg_phy_dst_overwritten;
+            
+            /* set this instruction is decoded done */
+            op->inst_decoded_done[i] = true;
+        }
+    }
+    
+    if (OP_DEC_DONE(decode_op)) {
+        delete decode_op;
+        decode_op = NULL;
+    }
+    
+    // place op in downstream slot
+	//execute_op = op;
 }
 
 void PipeState::pipeStageFetch() {
 	//if pipeline is stalled (our output slot is not empty), return
-	if (decode_op != NULL)
+	
+    if (decode_op != NULL)
 		return;
 
 	if (fetch_op != NULL) {
@@ -706,8 +845,8 @@ void PipeState::pipeStageFetch() {
 
 	fetch_op->reg_src1 = fetch_op->reg_src2 = fetch_op->reg_dst = -1;
 	fetch_op->pc = PC;
-	uint8_t* data = new uint8_t[4];
-	fetch_op->instFetchPkt = new Packet(true, false, PacketTypeFetch, PC, 4,
+	uint8_t* data = new uint8_t[4*FETCH_INST_NUM];
+	fetch_op->instFetchPkt = new Packet(true, false, PacketTypeFetch, PC, 4*FETCH_INST_NUM,
 			data, currCycle);
 	DPRINTF(DEBUG_PIPE, "sending pkt from fetch stage with addr %x \n: ",
 			fetch_op->instFetchPkt->addr);
@@ -716,7 +855,7 @@ void PipeState::pipeStageFetch() {
 	//get the next instruction to fetch from branch predictor
 	uint32_t target = BP->getTarget(PC);
 	if (target == -1) {
-		PC = PC + 4;
+		PC = PC + 4*FETCH_INST_NUM;
 	} else {
 		PC = target;
 	}
@@ -735,8 +874,12 @@ void PipeState::recvResp(Packet* pkt) {
 	case PacketTypeFetch:
 		//if the pkt-type is fetch proceed with fetching the instruction
 		if (fetch_op != nullptr && fetch_op->pc == pkt->addr && pkt->size == 4) {
-			fetch_op->instruction = *((uint32_t*) pkt->data);
-			fetch_op->readyForNextStage = true;
+			//FIX_CHIA-HAO: copy 4 fetched instructions
+            for (int i = 0; i < FETCH_INST_NUM; i++) {
+                fetch_op->instruction[i] = *((uint32_t*) pkt->data + i);
+			    fetch_op->inst_decoded_done[i] = false;
+            }
+            fetch_op->readyForNextStage = true;
 		}
 		break;
 	case PacketTypeLoad: {
