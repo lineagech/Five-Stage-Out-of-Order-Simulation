@@ -86,7 +86,9 @@ void PipeState::pipeCycle() {
 	pipeStageWb();
 	if(RUN_BIT == false)
     		return;
-	pipeStageMem();
+	//pipeStageMem();
+    /* Here doing the execution of instructiosns 
+     * and do memory acess if the instruction is LOAD and store */
 	for (int i = 0; i < RS_OP_NUM; i++) {
         if (!reservStation.rs_entries[i].src_reg1_ready || !reservStation.rs_entries[i].src_reg2_ready) {
             bool isReady = (mapTable.ready[reservStation.rs_entries[i].src_reg1] 
@@ -104,7 +106,13 @@ void PipeState::pipeCycle() {
             }
         }
         execute_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
-        pipeStageExecute();
+        if (!execute_op->exec_done) {
+            pipeStageExecute();
+        }
+        if (i == LOAD || i == STORE) {
+            mem_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
+            pipeStageMem();
+        }
         /* Free the entry */
         reservStation.rs_entries[i].busy = false;
 	}
@@ -204,13 +212,17 @@ void PipeState::pipeStageMem() {
 	if (!op)
 		return;
 	else {
-		if (op->is_mem == false) {
+		// FIX_CHIA-HAO: I dont expect there are operations other than load/store coming here
+        assert(op->is_mem);
+        /*
+        if (op->is_mem == false) {
 //			DPRINTF(DEBUG_PIPE, "clearing memory stage for instruction %x\n",
 //					mem_op->pc);
 			mem_op = NULL;
 			wb_op = op;
 			return;
 		}
+        */
 		if (op->memTried == true) {
 			if (op->waitOnPktIssue) {
 				op->waitOnPktIssue = !(data_mem->sendReq(op->memPkt));
@@ -224,7 +236,15 @@ void PipeState::pipeStageMem() {
 //						mem_op->pc);
 				Pipe_Op* op = mem_op;
 				mem_op = NULL;
-				wb_op = op;
+				//wb_op = op;
+                
+                /* Complete here: write the value to the physical register */
+                mapTable.ready[mem_op->reg_phy_dst] = true;
+                mapTable.regValue[mem_op->reg_phy_dst] = mem_op->reg_phy_dst_value;
+                
+                /* Update the value to RS */
+                updateRS(reservStation, mem_op->reg_phy_dst);
+
 				return;
 			}
 		}
@@ -974,6 +994,8 @@ void PipeState::recvResp(Packet* pkt) {
 					val |= (val & 0x80) ? 0xFFFFFF80 : 0;
 
 				mem_op->reg_dst_value = val;
+                // FIX_CHIA-HAO: 
+                mem_op->reg_phy_dst_value = val;
 			}
 			mem_op->readyForNextStage = true;
 		}
