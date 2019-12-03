@@ -87,8 +87,28 @@ void PipeState::pipeCycle() {
 	if(RUN_BIT == false)
     		return;
 	pipeStageMem();
-	pipeStageExecute();
-	pipeStageDecode();
+	for (int i = 0; i < RS_OP_NUM; i++) {
+        if (!reservStation.rs_entries[i].src_reg1_ready || !reservStation.rs_entries[i].src_reg2_ready) {
+            bool isReady = (mapTable.ready[reservStation.rs_entries[i].src_reg1] 
+                && mapTable.ready[reservStation.rs_entries[i].src_reg2]);
+            auto reg_phy_src1 = reservStation.rs_entries[i].src_reg1;
+            auto reg_phy_src2 = reservStation.rs_entries[i].src_reg2;
+            if (mapTable.ready[reg_phy_src1]) {
+                reservStation.rs_entries[i].src_reg1_ready = true;
+            }
+            if (mapTable.ready[reg_phy_src2]) {
+                reservStation.rs_entries[i].src_reg2_ready = true;
+            }
+            if (!isReady) {
+                continue;
+            }
+        }
+        execute_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
+        pipeStageExecute();
+        /* Free the entry */
+        reservStation.rs_entries[i].busy = false;
+	}
+    pipeStageDecode();
 	pipeStageFetch();
 
 	//handle branch recoveries
@@ -258,8 +278,8 @@ void PipeState::pipeStageExecute() {
 		execute_op->stall--;
 
 	//if downstream stall, return (and leave any input we had)
-	if (mem_op != NULL)
-		return;
+	//if (mem_op != NULL)
+	//	return;
 
 	//if no op to execute, return
 	if (execute_op == NULL)
@@ -270,9 +290,15 @@ void PipeState::pipeStageExecute() {
 
 	//read register values, stall if necessary
 	int stall = 0;
-	if (op->reg_src1 != -1) {
-		if (op->reg_src1 == 0)
+	if (op->reg_phy_src1 != -1) {
+		if (op->reg_phy_src1 == 0)
 			op->reg_src1_value = 0;
+        /*
+        else {
+            op->reg_src1_value = MapTable.regValue[op->reg_phy_src1];
+        }
+        */
+        /* FIX_CHIA-HAO: skipping forwarding here
 		else if (mem_op && mem_op->reg_dst == op->reg_src1) {
 			if (!mem_op->reg_dst_value_ready)
                 stall = 1;
@@ -282,10 +308,17 @@ void PipeState::pipeStageExecute() {
 			op->reg_src1_value = wb_op->reg_dst_value;
 		} else
 			op->reg_src1_value = REGS[op->reg_src1];
+        */
 	}
-	if (op->reg_src2 != -1) {
-		if (op->reg_src2 == 0)
+	if (op->reg_phy_src2 != -1) {
+		if (op->reg_phy_src2 == 0)
 			op->reg_src2_value = 0;
+        /*
+        else {
+            op->reg_src2_value = regMap.regValue[op->reg_phy_src2];
+        }
+        */
+        /*
 		else if (mem_op && mem_op->reg_dst == op->reg_src2) {
 			if (!mem_op->reg_dst_value_ready)
                 stall = 1;
@@ -296,7 +329,8 @@ void PipeState::pipeStageExecute() {
 			 op->reg_src2_value = wb_op->reg_dst_value;
 		} else
 			op->reg_src2_value = REGS[op->reg_src2];
-	}
+	    */
+    }
 
 	//if requires a stall return without clearing stage input
 	if (stall)
@@ -549,9 +583,11 @@ void PipeState::pipeStageExecute() {
 	if (op->branch_taken)
 		pipeRecover(3, op->branch_dest);
 
+    op->exec_done = true;
+
 	//remove from upstream stage and place in downstream stage
 	execute_op = NULL;
-	mem_op = op;
+	//mem_op = op;
 }
 
 void PipeState::pipeStageDecode() {
@@ -721,16 +757,28 @@ void PipeState::pipeStageDecode() {
                 
             /* get src physical register */
             if (op->reg_src1 != -1) {
-                op->reg_phy_src1 = mapTable.regMap[op->reg_src1];
-                op->reg_phy_src1_ready = mapTable.ready[op->reg_src1];
+                if (op->reg_src1 == 0) {
+                    op->reg_phy_src1 = 0;
+                    op->reg_phy_src1_ready = true;
+                }
+                else {
+                    op->reg_phy_src1 = mapTable.regMap[op->reg_src1];
+                    op->reg_phy_src1_ready = mapTable.ready[op->reg_phy_src1];
+                }
             }
             else {
                 op->reg_phy_src1_ready = true;
             }
 
             if (op->reg_src2 != -1) {
-                op->reg_phy_src2 = mapTable.regMap[op->reg_src2];
-                op->reg_phy_src2_ready = mapTable.ready[op->reg_src2];
+                if (op->reg_src2 == 0) {
+                    op->reg_phy_src2 = 0;
+                    op->reg_phy_src2_ready = true;
+                }
+                else {
+                    op->reg_phy_src2 = mapTable.regMap[op->reg_src2];
+                    op->reg_phy_src2_ready = mapTable.ready[op->reg_phy_src2];
+                }
             }
             else {
                 op->reg_phy_src2_ready = true;
@@ -743,6 +791,8 @@ void PipeState::pipeStageDecode() {
             else {
                op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
                op->reg_phy_dst = reg_phy_dst;
+               mapTable.regMap[op->reg_dst] = reg_phy_dst;
+               mapTable.ready[op->reg_phy_dst] = false;
             }
 
             /* Allocate RS */
@@ -777,6 +827,8 @@ void PipeState::pipeStageDecode() {
             /* Update everything */
             Pipe_Op *op_ptr = (Pipe_Op*)malloc(sizeof(Pipe_Op));
             memcpy(op_ptr, op, sizeof(Pipe_Op));
+            op_ptr->exec_done = false;
+            op_ptr->compl_done = false;
             /* Update LSQ, push to LSQ */
             if (rs_op == LOAD || rs_op == STORE) {
                 ldstQueue.size++;

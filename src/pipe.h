@@ -34,9 +34,12 @@ typedef struct Pipe_Op {
     int reg_phy_src2;
     int reg_phy_src2_value;
     int reg_phy_dst;
+    int reg_phy_dst_value;
     int reg_phy_dst_overwritten;
     bool reg_phy_src1_ready;
     bool reg_phy_src2_ready;
+    bool exec_done;
+    bool compl_done;
 
     //decoded opcode and subopcode fields
 	int opcode, subop;

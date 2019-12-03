@@ -40,7 +40,7 @@ class MapTable
 public:
     /* logical <-> physical */
     std::unordered_map<int,int> regMap;
-    /* ready bit */
+    /* logical : ready bit */
     std::unordered_map<int,bool> ready;
     /* physical reg : value */
     std::unordered_map<int,bool> regValue;
@@ -100,6 +100,7 @@ public:
      
     LSQ(int32_t _num) : num_entries(_num), head(0), tail(0), size(0) {
         lsq_entries = (void**)malloc(sizeof(void*)*_num); 
+        lsq_ready = new bool[_num];
     }
     
     int32_t getLSQAvail() {
@@ -110,6 +111,7 @@ public:
     }
 
     void** lsq_entries;
+    bool* lsq_ready;
     int32_t num_entries;
     int32_t size;
     int32_t head;
