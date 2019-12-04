@@ -82,9 +82,10 @@ public:
     class ROB_Entry 
     {
     public:
-        ROB_Entry() : op_ptr(NULL)
+        ROB_Entry() : op_ptr(NULL), ready_to_retire(false)
         { }
         void* op_ptr;
+        bool ready_to_retire;
         int32_t output_reg; // T
         int32_t overwritten_reg; // Told
     };
@@ -106,11 +107,21 @@ public:
         return next;
     }
 
+    void retire_insts() {
+        while(ROB_entries[head].ready_to_retire == true) {
+            ROB_entries[head].ready_to_retire = false;
+            head++;
+        }
+    }
+
     ROB_Entry *ROB_entries;
     bool *occupied;
     int32_t num_entries;
     int32_t head;
     int32_t tail;
+    
+    /* Pipe_Op* <-> index of ROB_entries */
+    std::unordered_map<void*, int> entry_index_map;
 };
 
 class LSQ 

@@ -39,11 +39,14 @@ static std::set<Pipe_Op*> execSet; //execution list
 static std::set<Pipe_Op*> complSet; //completion list
 
 #if 1
-#define DEBUG(msg,op) \
+#define DEBUG(msg,op,i) \
 do{ \
     printf(msg);\
-    printOp(op);\
+    printOp2(op, i);\
 } while(0)
+
+#define DEBUG_MSG(fmt,...) fprintf(stderr, fmt, __VA_ARGS__)
+
 #endif
 
 /* debug */
@@ -54,6 +57,21 @@ void printOp(Pipe_Op *op) {
 				op->pc, op->instruction, op->reg_src1, op->reg_src1_value,
 				op->reg_src2, op->reg_src2_value, op->reg_dst,
 				op->reg_dst_value_ready, op->reg_dst_value, op->is_branch,
+				op->branch_taken, op->branch_dest, op->is_mem, op->mem_addr);
+	else
+		printf("(null)\n");
+}
+
+void printOp2(Pipe_Op *op, int i) {
+	if (op)
+		printf(
+				"OP (PC=%08x inst=%08x) src1=R%d(Phy R%d) src2=R%d (Phy R%d) "
+                "dst=R%d (Phy R%d) br=%d taken=%d dest=%08x mem=%d addr=%08x\n",
+				op->pc+i*4, op->instruction[i], 
+                op->reg_src1, op->reg_phy_src1,
+				op->reg_src2, op->reg_phy_src2,
+                op->reg_dst, op->reg_phy_dst,
+				op->is_branch,
 				op->branch_taken, op->branch_dest, op->is_mem, op->mem_addr);
 	else
 		printf("(null)\n");
@@ -102,14 +120,18 @@ void PipeState::pipeCycle() {
 		printOp(wb_op);
 		printf("\n");
 	}
+    printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
     
     // See WB as the completion statge
 	for (auto it = complSet.begin(); it != complSet.end(); it++) {
         wb_op = *it;
-        DEBUG("Instruction Retired:\n", wb_op);
+        DEBUG_MSG("Instruction Retires: Dst R%d (Phy R%d)\n", wb_op->reg_dst, wb_op->reg_phy_dst);
         pipeStageWb();
     }
     complSet.clear();
+    /* Update ROB head pointer */
+    reorderedBuffer.retire_insts();
+
 
 	if(RUN_BIT == false)
     		return;
@@ -262,7 +284,11 @@ void PipeState::pipeStageWb() {
         archMap.regValue[op->reg_phy_dst] = mapTable.regValue[op->reg_phy_dst];
         /* Update FreeList */
         freeList.isFree[op->reg_phy_dst_overwritten] = true;
-
+        /* Delete ROB entry */
+        auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)];
+        reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true;
+        
+        DEBUG_MSG("Retire insts: update ArchMap %d : %d, Free %d\n", op->reg_dst, op->reg_phy_dst, op->reg_phy_dst_overwritten);
 		DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
 	}
 	//if this was a syscall, perform action
@@ -674,6 +700,7 @@ void PipeState::pipeStageExecute() {
 		pipeRecover(3, op->branch_dest);
 
     op->exec_done = true;
+    DEBUG_MSG("Execute Instruction with opCode %d, reg_dst R%d\n", op->opcode, op->reg_dst);
 
 	//remove from upstream stage and place in downstream stage
 	execute_op = NULL;
@@ -943,11 +970,14 @@ void PipeState::pipeStageDecode() {
             reorderedBuffer.tail = ROB_avail_index;
             reorderedBuffer.occupied[ROB_avail_index] = true;
             reorderedBuffer.ROB_entries[ROB_avail_index].op_ptr = (void*)op_ptr;
+            reorderedBuffer.ROB_entries[ROB_avail_index].ready_to_retire = false;
             reorderedBuffer.ROB_entries[ROB_avail_index].output_reg = op->reg_phy_dst;
             reorderedBuffer.ROB_entries[ROB_avail_index].overwritten_reg = op->reg_phy_dst_overwritten;
-            
+            reorderedBuffer.entry_index_map[op_ptr] = ROB_avail_index;
+
             /* set this instruction is decoded done */
             op->inst_decoded_done[i] = true;
+            DEBUG("Instruction Decoded: \n", op_ptr, i);
         }
     }
     
