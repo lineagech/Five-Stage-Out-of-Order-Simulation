@@ -2,6 +2,9 @@
 #define __OOO_DATA_STRUCT__
 
 #include <unordered_map>
+#include <list>
+#include <set>
+#include <string.h>
 
 typedef enum {
     INT_ALU1 = 0,
@@ -139,7 +142,7 @@ class FreeList
 public:
     FreeList(int32_t _num) : num_phy_reg(_num) { 
         isFree = new bool[_num];        
-        curr_free_idx = 0;
+        curr_free_idx = 1;
     }
 
     ~FreeList() {
@@ -150,7 +153,7 @@ public:
         while (curr_free_idx < num_phy_reg && !isFree[curr_free_idx]) {
             curr_free_idx++;
             if (curr_free_idx == num_phy_reg) {
-                curr_free_idx = 0;
+                curr_free_idx = 1;
             }
             if (snapshot_idx == curr_free_idx) { // no free reg anymore
                 return -1;

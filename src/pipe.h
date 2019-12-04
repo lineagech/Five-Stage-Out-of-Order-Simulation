@@ -30,9 +30,9 @@ typedef struct Pipe_Op {
     // FIX_CHIA-HAO
     bool inst_decoded_done[FETCH_INST_NUM];
     int reg_phy_src1;
-    int reg_phy_src1_value;
+    //int reg_phy_src1_value;
     int reg_phy_src2;
-    int reg_phy_src2_value;
+    //int reg_phy_src2_value;
     int reg_phy_dst;
     int reg_phy_dst_value;
     int reg_phy_dst_overwritten;

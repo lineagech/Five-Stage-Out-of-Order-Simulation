@@ -18,6 +18,16 @@
 #include "ooo_data_structures.h"
 
 #define OP_DEC_DONE(op) (op->inst_decoded_done[0] && op->inst_decoded_done[1] && op->inst_decoded_done[2] && op->inst_decoded_done[3]) 
+#define OP_COMPL(op) \
+do {\
+    /* Complete here: write the value to the physical register */ \
+    mapTable.ready[op->reg_phy_dst] = true; \
+    mapTable.regValue[op->reg_phy_dst] = op->reg_phy_dst_value; \
+    /* Update the value to RS */ \
+    updateRS(reservStation, op->reg_phy_dst); \
+    /* Update the completion flag */ \
+    op->compl_done = true; \
+} while(0)
 
 static MapTable mapTable;
 static FreeList freeList(64);
@@ -25,6 +35,16 @@ static RS reservStation;
 static ROB reorderedBuffer(8);
 static LSQ ldstQueue(4);
 static ArchMap archMap;
+static std::set<Pipe_Op*> execSet; //execution list
+static std::set<Pipe_Op*> complSet; //completion list
+
+#if 1
+#define DEBUG(msg,op) \
+do{ \
+    printf(msg);\
+    printOp(op);\
+} while(0)
+#endif
 
 /* debug */
 void printOp(Pipe_Op *op) {
@@ -82,14 +102,55 @@ void PipeState::pipeCycle() {
 		printOp(wb_op);
 		printf("\n");
 	}
+    
+    // See WB as the completion statge
+	for (auto it = complSet.begin(); it != complSet.end(); it++) {
+        wb_op = *it;
+        DEBUG("Instruction Retired:\n", wb_op);
+        pipeStageWb();
+    }
+    complSet.clear();
 
-	pipeStageWb();
 	if(RUN_BIT == false)
     		return;
 	//pipeStageMem();
-    /* Here doing the execution of instructiosns 
+
+    /* Keep tracking of execution list,
+     * once the execution is done, complete that */
+    std::list<Pipe_Op*> removeList;
+    for (auto it = execSet.begin(); it != execSet.end(); it++) {
+        auto op_ptr = *it;
+        assert(op_ptr->exec_done);
+        if (op_ptr->is_mem) {
+            mem_op = op_ptr;
+            pipeStageMem();
+        }
+        else {
+            if (op_ptr->stall == 0) {
+                OP_COMPL(op_ptr);
+            }
+            else {
+                execute_op = op_ptr;
+                pipeStageExecute();
+            }
+        }
+        if (op_ptr->compl_done) {
+            removeList.push_back(*it);
+        }
+    }
+    /* Remove the instructions which are executed done */
+    for (auto it = removeList.begin(); it != removeList.end(); it++) {
+        execSet.erase(execSet.find(*it));
+        complSet.insert(*it);
+    }
+    removeList.clear();
+
+    /* Here doing the issue of instructiosns 
      * and do memory acess if the instruction is LOAD and store */
 	for (int i = 0; i < RS_OP_NUM; i++) {
+        if (!reservStation.rs_entries[i].busy) {
+            continue;
+        }
         if (!reservStation.rs_entries[i].src_reg1_ready || !reservStation.rs_entries[i].src_reg2_ready) {
             bool isReady = (mapTable.ready[reservStation.rs_entries[i].src_reg1] 
                 && mapTable.ready[reservStation.rs_entries[i].src_reg2]);
@@ -97,24 +158,30 @@ void PipeState::pipeCycle() {
             auto reg_phy_src2 = reservStation.rs_entries[i].src_reg2;
             if (mapTable.ready[reg_phy_src1]) {
                 reservStation.rs_entries[i].src_reg1_ready = true;
+                ((Pipe_Op*)(reservStation.rs_entries[i].op_ptr))->reg_src1_value = mapTable.regValue[reg_phy_src1];
             }
             if (mapTable.ready[reg_phy_src2]) {
                 reservStation.rs_entries[i].src_reg2_ready = true;
+                ((Pipe_Op*)(reservStation.rs_entries[i].op_ptr))->reg_src2_value = mapTable.regValue[reg_phy_src2];
             }
             if (!isReady) {
                 continue;
             }
         }
         execute_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
-        if (!execute_op->exec_done) {
-            pipeStageExecute();
-        }
+        
+        /* should not be executed before */
+        assert(!execute_op->exec_done);
+        pipeStageExecute();
+        
         if (i == LOAD || i == STORE) {
             mem_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
             pipeStageMem();
         }
         /* Free the entry */
         reservStation.rs_entries[i].busy = false;
+        /* Insert to the set to track */
+        execSet.insert((Pipe_Op*)reservStation.rs_entries[i].op_ptr);
 	}
     pipeStageDecode();
 	pipeStageFetch();
@@ -186,8 +253,15 @@ void PipeState::pipeStageWb() {
 	wb_op = NULL;
 
 	//if this instruction writes a register, do so now
-	if (op->reg_dst != -1 && op->reg_dst != 0) {
-		REGS[op->reg_dst] = op->reg_dst_value;
+	if (op->reg_phy_dst != -1 && op->reg_phy_dst != 0) {
+		//REGS[op->reg_dst] = op->reg_dst_value;
+        
+        // FIX_CHIA-HAO: 
+        /* Update ArchTable */
+        archMap.regMap[op->reg_dst] = op->reg_phy_dst;
+        archMap.regValue[op->reg_phy_dst] = mapTable.regValue[op->reg_phy_dst];
+        /* Update FreeList */
+        freeList.isFree[op->reg_phy_dst_overwritten] = true;
 
 		DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
 	}
@@ -238,13 +312,9 @@ void PipeState::pipeStageMem() {
 				mem_op = NULL;
 				//wb_op = op;
                 
-                /* Complete here: write the value to the physical register */
-                mapTable.ready[mem_op->reg_phy_dst] = true;
-                mapTable.regValue[mem_op->reg_phy_dst] = mem_op->reg_phy_dst_value;
+                /* FIX_CHIA-HAO: Completion */
+                OP_COMPL(op);
                 
-                /* Update the value to RS */
-                updateRS(reservStation, mem_op->reg_phy_dst);
-
 				return;
 			}
 		}
