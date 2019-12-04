@@ -21,12 +21,14 @@
 #define OP_COMPL(op) \
 do {\
     /* Complete here: write the value to the physical register */ \
-    mapTable.ready[op->reg_phy_dst] = true; \
-    mapTable.regValue[op->reg_phy_dst] = op->reg_phy_dst_value; \
-    /* Update the value to RS */ \
-    updateRS(reservStation, op->reg_phy_dst); \
-    /* Update the completion flag */ \
-    op->compl_done = true; \
+    if (op->reg_phy_dst != -1) {\
+        mapTable.ready[op->reg_phy_dst] = true; \
+        mapTable.regValue[op->reg_phy_dst] = op->reg_phy_dst_value; \
+        /* Update the value to RS */ \
+        updateRS(reservStation, op->reg_phy_dst); \
+        /* Update the completion flag */ \
+        op->compl_done = true; \
+    }\
 } while(0)
 
 static MapTable mapTable;

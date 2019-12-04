@@ -111,6 +111,7 @@ public:
         while(ROB_entries[head].ready_to_retire == true) {
             ROB_entries[head].ready_to_retire = false;
             head++;
+            if (head > num_entries) head = 1;
         }
     }
 
