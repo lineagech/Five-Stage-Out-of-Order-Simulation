@@ -85,6 +85,10 @@ uint32_t Simulator::readMemForDump(uint32_t address) {
 	return data;
 }
 
+// FIX_CHIA-HAO
+#include "ooo_data_structures.h"
+extern ArchMap archMap;
+
 void Simulator::registerDump() {
 	int i;
 
@@ -92,7 +96,8 @@ void Simulator::registerDump() {
 
 	//update this for ./run script so it will return the correct value for register
 	for (i = 0; i < 32; i++) {
-		printf("R%d: 0x%08x\n", i, pipe->REGS[i]);
+		//printf("R%d: 0x%08x\n", i, pipe->REGS[i]);
+		printf("R%d: 0x%08x\n", i, archMap.regValue[archMap.regMap[i]]);
 	}
 
 	printf("HI: 0x%08x\n", pipe->HI);

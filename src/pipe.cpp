@@ -40,7 +40,7 @@ static FreeList freeList(64);
 static RS reservStation;
 static ROB reorderedBuffer(8);
 static LSQ ldstQueue(4);
-static ArchMap archMap;
+ArchMap archMap;
 static std::set<Pipe_Op*> execSet; //execution list
 static std::set<Pipe_Op*> complSet; //completion list
 
@@ -317,6 +317,7 @@ void PipeState::pipeStageWb() {
         archMap.regMap[op->reg_dst] = op->reg_phy_dst;
         archMap.regValue[op->reg_phy_dst] = mapTable.regValue[op->reg_phy_dst];
         /* Update FreeList */
+        printf("Free Phy Reg R%d\n", op->reg_phy_dst_overwritten);
         freeList.isFree[op->reg_phy_dst_overwritten] = true;
         
         DEBUG_MSG("Retire insts: update ArchMap %d : %d, Free %d\n", op->reg_dst, op->reg_phy_dst, op->reg_phy_dst_overwritten);
@@ -778,6 +779,10 @@ void PipeState::pipeStageDecode() {
             op->se_imm16 = se_imm16;
             op->shamt = shamt;
             
+            if (op->instruction[i] == 0) { // NULL operation
+                op->inst_decoded_done[i] = true;
+                continue;
+            }
             // FIX_CHIA-HAO: initialize to -1 first
             op->reg_src1 = -1;
             op->reg_src2 = -1;
@@ -1027,7 +1032,7 @@ void PipeState::pipeStageDecode() {
             reservStation.rs_entries[rs_op].src_reg1_ready = op->reg_phy_src1_ready;
             reservStation.rs_entries[rs_op].src_reg2_ready = op->reg_phy_src2_ready;
             /* Update Reorder Buffer */
-            reorderedBuffer.num_entries++;
+            //reorderedBuffer.num_entries++;
             reorderedBuffer.tail = ROB_avail_index;
             reorderedBuffer.occupied[ROB_avail_index] = true;
             reorderedBuffer.ROB_entries[ROB_avail_index].op_ptr = (void*)op_ptr;

@@ -83,7 +83,14 @@ public:
         memset(occupied, false, sizeof(bool)*(_num+1));
     }
     ~ROB() {
-        delete[] ROB_entries;
+        if (occupied) {
+            delete[] occupied;
+            occupied = NULL;
+        }
+        if (ROB_entries) {
+            delete[] ROB_entries;
+            ROB_entries = NULL;
+        }
     }
         
     int32_t getNextAvail() {
@@ -97,6 +104,7 @@ public:
     void retire_insts() {
         while(ROB_entries[head].ready_to_retire == true) {
             ROB_entries[head].ready_to_retire = false;
+            ROB_entries[head].op_ptr = NULL;
             head++;
             if (head > num_entries) head = 1;
         }
@@ -148,7 +156,10 @@ public:
     }
 
     ~FreeList() {
-        delete[] isFree;
+        if (isFree) {
+            delete[] isFree;
+            isFree = NULL;
+        }
     }
     int32_t getNextFreeReg() {
         int32_t snapshot_idx = curr_free_idx;
