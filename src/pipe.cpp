@@ -88,7 +88,16 @@ PipeState::PipeState() :
 	//initialize the register file
 	for (int i = 0; i < 32; i++) {
 		REGS[i] = 0;
-	}
+	    mapTable.regMap[i] = i;
+        archMap.regMap[i] = i;
+    }
+    /* Initialize Map Table */
+    for (int i = 0; i < 64; i++) {
+        mapTable.regValue[i] = 0;
+        archMap.regValue[i] = 0;
+        mapTable.ready[i] = true;
+    }
+
 	//initialize PC
 	PC = 0x00400000;
 	//initialize the branch predictor
@@ -289,7 +298,8 @@ void PipeState::pipeStageWb() {
         /* Delete ROB entry */
         auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)];
         reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true;
-        
+        reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op)));
+
         DEBUG_MSG("Retire insts: update ArchMap %d : %d, Free %d\n", op->reg_dst, op->reg_phy_dst, op->reg_phy_dst_overwritten);
 		DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
 	}
@@ -723,6 +733,8 @@ void PipeState::pipeStageDecode() {
 	Pipe_Op *op = decode_op;
 	// FIX_CHIA-HAO: when all of 4 instructions are decoded, decode_op will be set as NULL
     //decode_op = NULL;
+    
+    bool no_need_free_phy_reg = false;
     for (int i = 0; i < FETCH_INST_NUM; i++) {
         if (!op->inst_decoded_done[i]) {
             //set up info fields (source/dest regs, immediate, jump dest) as necessary
@@ -763,10 +775,12 @@ void PipeState::pipeStageDecode() {
                 if (funct2 == SUBOP_SYSCALL) {
                     op->reg_src1 = 2; // v0
                     op->reg_src2 = 3; // v1
+                    no_need_free_phy_reg = true;
                 }
                 if (funct2 == SUBOP_JR || funct2 == SUBOP_JALR) {
                     op->is_branch = 1;
                     op->branch_cond = 0;
+                    no_need_free_phy_reg = true;
                 }
                 
                 rs_op = INT_ALU1;
@@ -904,14 +918,20 @@ void PipeState::pipeStageDecode() {
             }
 
             /* Request free physical registers for dst register */
-            int reg_phy_dst = freeList.getNextFreeReg();
+            
+            int reg_phy_dst;
+            if (no_need_free_phy_reg) {
+                reg_phy_dst = -1;
+            }
+            else {
+                reg_phy_dst = freeList.getNextFreeReg();
+            }
             if (reg_phy_dst == -1) 
                 continue;
             else {
-               op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
+               //op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
+               op->reg_phy_dst_overwritten = mapTable.regMap[op->reg_dst];
                op->reg_phy_dst = reg_phy_dst;
-               mapTable.regMap[op->reg_dst] = reg_phy_dst;
-               mapTable.ready[op->reg_phy_dst] = false;
             }
 
             /* Allocate RS */
@@ -958,6 +978,7 @@ void PipeState::pipeStageDecode() {
             freeList.isFree[op->reg_phy_dst] = false;
             /* Update Map Table */
             mapTable.regMap[op->reg_dst] = op->reg_phy_dst;
+            mapTable.ready[op->reg_phy_dst] = false;
             /* Update Reservation Stations */
             reservStation.rs_entries[rs_op].busy = true;
             reservStation.rs_entries[rs_op].op_ptr = (void*)op_ptr;
@@ -1047,7 +1068,7 @@ void PipeState::recvResp(Packet* pkt) {
 	switch (pkt->type) {
 	case PacketTypeFetch:
 		//if the pkt-type is fetch proceed with fetching the instruction
-		if (fetch_op != nullptr && fetch_op->pc == pkt->addr && pkt->size == 4) {
+		if (fetch_op != nullptr && fetch_op->pc == pkt->addr && pkt->size == 4*FETCH_INST_NUM) {
 			//FIX_CHIA-HAO: copy 4 fetched instructions
             for (int i = 0; i < FETCH_INST_NUM; i++) {
                 fetch_op->instruction[i] = *((uint32_t*) pkt->data + i);

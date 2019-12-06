@@ -90,7 +90,7 @@ public:
         int32_t overwritten_reg; // Told
     };
     
-    ROB(int32_t _num) : num_entries(_num), head(0), tail(0) { 
+    ROB(int32_t _num) : num_entries(_num), head(1), tail(0) { 
         ROB_entries = new ROB_Entry[_num+1];
         occupied = new bool[_num+1];
         memset(occupied, false, sizeof(bool)*(_num+1));
@@ -154,6 +154,9 @@ class FreeList
 public:
     FreeList(int32_t _num) : num_phy_reg(_num) { 
         isFree = new bool[_num];        
+        for (int i = 0; i < _num; i++) {
+            isFree[i] = true;
+        }
         curr_free_idx = 1;
     }
 
