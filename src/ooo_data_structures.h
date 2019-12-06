@@ -105,6 +105,7 @@ public:
         while(ROB_entries[head].ready_to_retire == true) {
             ROB_entries[head].ready_to_retire = false;
             ROB_entries[head].op_ptr = NULL;
+            occupied[head] = false;
             head++;
             if (head > num_entries) head = 1;
         }
@@ -152,7 +153,7 @@ public:
         for (int i = 0; i < _num; i++) {
             isFree[i] = true;
         }
-        curr_free_idx = 1;
+        curr_free_idx = 33;
     }
 
     ~FreeList() {
