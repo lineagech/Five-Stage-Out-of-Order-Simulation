@@ -24,10 +24,14 @@ do {\
     if (op->reg_phy_dst != -1) {\
         mapTable.ready[op->reg_phy_dst] = true; \
         mapTable.regValue[op->reg_phy_dst] = op->reg_phy_dst_value; \
+        printf("Completion R%d (Phy R%d) : %d \n", op->reg_dst, op->reg_phy_dst, op->reg_dst_value);\
         /* Update the value to RS */ \
-        updateRS(reservStation, op->reg_phy_dst); \
+        updateRS(reservStation, op->reg_phy_dst, op->reg_dst_value); \
         /* Update the completion flag */ \
         op->compl_done = true; \
+    }\
+    else if (op->subop == SUBOP_SYSCALL){\
+        op->compl_done = true;\
     }\
 } while(0)
 
@@ -51,6 +55,23 @@ do{ \
 
 #endif
 
+auto updateRS = [&](RS& rs, int reg, int value) {
+    for (int i = 0; i < RS_OP_NUM; i++) {
+        auto entry = &(rs.rs_entries[i]);
+        if (entry->busy) {
+            if (entry->src_reg1 == reg) {
+                entry->src_reg1_ready = true;
+                ((Pipe_Op*)(entry->op_ptr))->reg_src1_value = value;
+            }
+            if (entry->src_reg2 == reg) {
+                entry->src_reg2_ready = true;
+                ((Pipe_Op*)(entry->op_ptr))->reg_src2_value = value;
+            }
+        }
+    }
+};
+
+
 /* debug */
 void printOp(Pipe_Op *op) {
 	if (op)
@@ -69,7 +90,7 @@ void printOp2(Pipe_Op *op, int i) {
 		printf(
 				"OP (PC=%08x inst=%08x) src1=R%d(Phy R%d) src2=R%d (Phy R%d) "
                 "dst=R%d (Phy R%d) br=%d taken=%d dest=%08x mem=%d addr=%08x\n",
-				op->pc+i*4, op->instruction[i], 
+				op->pc, op->instruction[i], 
                 op->reg_src1, op->reg_phy_src1,
 				op->reg_src2, op->reg_phy_src2,
                 op->reg_dst, op->reg_phy_dst,
@@ -121,7 +142,8 @@ PipeState::~PipeState() {
 void PipeState::pipeCycle() {
 	if (DEBUG_PIPE) {
 		printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
-		printf("DECODE: ");
+		/*
+        printf("DECODE: ");
 		printOp(decode_op);
 		printf("EXEC : ");
 		printOp(execute_op);
@@ -129,7 +151,8 @@ void PipeState::pipeCycle() {
 		printOp(mem_op);
 		printf("WB   : ");
 		printOp(wb_op);
-		printf("\n");
+		*/
+        printf("\n");
 	}
     printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
     
@@ -295,11 +318,7 @@ void PipeState::pipeStageWb() {
         archMap.regValue[op->reg_phy_dst] = mapTable.regValue[op->reg_phy_dst];
         /* Update FreeList */
         freeList.isFree[op->reg_phy_dst_overwritten] = true;
-        /* Delete ROB entry */
-        auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)];
-        reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true;
-        reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op)));
-
+        
         DEBUG_MSG("Retire insts: update ArchMap %d : %d, Free %d\n", op->reg_dst, op->reg_phy_dst, op->reg_phy_dst_overwritten);
 		DPRINTF(DEBUG_PIPE, "R%d = %08x\n", op->reg_dst, op->reg_dst_value);
 	}
@@ -310,6 +329,11 @@ void PipeState::pipeStageWb() {
 			RUN_BIT = false;
 		}
 	}
+    /* Delete ROB entry */
+    auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)];
+    reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true;
+    reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op)));
+
 
 	//free the op
 	free(op);
@@ -761,6 +785,7 @@ void PipeState::pipeStageDecode() {
             op->reg_phy_src1 = -1;
             op->reg_phy_src2 = -1;
             op->reg_phy_dst = -1;
+            op->is_mem = 0;
 
             RS_OP rs_op = INVALID;
 
@@ -820,6 +845,7 @@ void PipeState::pipeStageDecode() {
                 op->branch_dest = (op->pc & 0xF0000000) | targ;
                 
                 rs_op = INT_ALU1;
+                no_need_free_phy_reg = true;
                 
                 break;
 
@@ -835,6 +861,7 @@ void PipeState::pipeStageDecode() {
                 op->reg_src2 = rt;
                 
                 rs_op = INT_ALU1;
+                no_need_free_phy_reg = true;
 
                 break;
 
@@ -884,6 +911,7 @@ void PipeState::pipeStageDecode() {
                     op->mem_write = 1;
                     op->reg_src2 = rt;
                     rs_op = STORE;
+                    no_need_free_phy_reg = true;
                 }
                 break;
             }
@@ -916,7 +944,12 @@ void PipeState::pipeStageDecode() {
             else {
                 op->reg_phy_src2_ready = true;
             }
-
+            
+            // Special handling for syscall
+            if (op->subop == SUBOP_SYSCALL) {
+                //op->reg_phy_src1_ready = true;
+                //op->reg_phy_src2_ready = true;
+            }
             /* Request free physical registers for dst register */
             
             int reg_phy_dst;
@@ -926,8 +959,12 @@ void PipeState::pipeStageDecode() {
             else {
                 reg_phy_dst = freeList.getNextFreeReg();
             }
-            if (reg_phy_dst == -1) 
+            if (reg_phy_dst == -1 && !no_need_free_phy_reg) { 
                 continue;
+            }
+            else if (reg_phy_dst == -1 && no_need_free_phy_reg){
+                // do nothing
+            }
             else {
                //op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
                op->reg_phy_dst_overwritten = mapTable.regMap[op->reg_dst];
@@ -966,6 +1003,7 @@ void PipeState::pipeStageDecode() {
             /* Update everything */
             Pipe_Op *op_ptr = (Pipe_Op*)malloc(sizeof(Pipe_Op));
             memcpy(op_ptr, op, sizeof(Pipe_Op));
+            op_ptr->pc = op->pc + i*4;
             op_ptr->exec_done = false;
             op_ptr->compl_done = false;
             /* Update LSQ, push to LSQ */

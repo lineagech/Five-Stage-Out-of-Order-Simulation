@@ -39,19 +39,6 @@ public:
     RS_Entry rs_entries[RS_OP_NUM];
 };
 
-auto updateRS = [&](RS& rs, int reg) {
-    for (int i = 0; i < RS_OP_NUM; i++) {
-        auto entry = &(rs.rs_entries[i]);
-        if (entry->busy) {
-            if (entry->src_reg1 == reg) {
-                entry->src_reg1_ready = true;
-            }
-            if (entry->src_reg2 == reg) {
-                entry->src_reg2_ready = true;
-            }
-        }
-    }
-};
 
 
 class MapTable 
