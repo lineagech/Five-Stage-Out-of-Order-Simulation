@@ -23,7 +23,7 @@ do {\
     /* Complete here: write the value to the physical register */ \
     if (op->reg_phy_dst != -1) {\
         mapTable.ready[op->reg_phy_dst] = true; \
-        mapTable.regValue[op->reg_phy_dst] = op->reg_phy_dst_value; \
+        mapTable.regValue[op->reg_phy_dst] = op->reg_dst_value; \
         printf("Completion R%d (Phy R%d) : %d \n", op->reg_dst, op->reg_phy_dst, op->reg_dst_value);\
         /* Update the value to RS */ \
         updateRS(reservStation, op->reg_phy_dst, op->reg_dst_value); \

@@ -49,7 +49,7 @@ public:
     /* physical reg : ready bit */
     std::unordered_map<int,bool> ready;
     /* physical reg : value */
-    std::unordered_map<int,bool> regValue;
+    std::unordered_map<int,int> regValue;
 };
 
 class ArchMap
@@ -58,7 +58,7 @@ public:
     /* logical <-> physical */
     std::unordered_map<int,int> regMap;
     /* physical reg : value */
-    std::unordered_map<int,bool> regValue;
+    std::unordered_map<int,int> regValue;
 };
 
 
