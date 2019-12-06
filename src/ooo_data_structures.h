@@ -44,6 +44,13 @@ public:
 class MapTable 
 {
 public:
+    void clear()
+    {
+        regMap.clear();
+        ready.clear();
+        regValue.clear();
+    }
+    
     /* logical <-> physical */
     std::unordered_map<int,int> regMap;
     /* physical reg : ready bit */
@@ -55,6 +62,12 @@ public:
 class ArchMap
 {
 public:
+    void clear()
+    {
+        regMap.clear();
+        regValue.clear();
+    }
+    
     /* logical <-> physical */
     std::unordered_map<int,int> regMap;
     /* physical reg : value */
@@ -148,6 +161,9 @@ public:
 class FreeList 
 {
 public:
+    FreeList():num_phy_reg(0),curr_free_idx(0),isFree(NULL)
+    { }
+    
     FreeList(int32_t _num) : num_phy_reg(_num) { 
         isFree = new bool[_num];        
         for (int i = 0; i < _num; i++) {
@@ -162,6 +178,16 @@ public:
             isFree = NULL;
         }
     }
+    
+    void clear(){
+       num_phy_reg = 0;
+       curr_free_idx = 0;
+       if (isFree) {
+           delete[] isFree;
+           isFree = NULL;
+       }
+   }
+    
     int32_t getNextFreeReg() {
         int32_t snapshot_idx = curr_free_idx;
         while (curr_free_idx < num_phy_reg && !isFree[curr_free_idx]) {
@@ -178,6 +204,88 @@ public:
     int32_t num_phy_reg;
     int32_t curr_free_idx;
     bool* isFree;
+};
+
+class BranchStack
+{
+public:
+    class BS_Entry
+    {
+    public:
+        BS_Entry():ROB_tail(0),LSQ_tail(0)
+        { }
+        
+        BS_Entry(const MapTable &maptable, const ArchMap &archmap, const FreeList &freelist, int32_t ROBtail, int32_t LSQtail)
+        {
+            //copy maptable
+            br_maptable.regMap = maptable.regMap;
+            br_maptable.ready = maptable.ready;
+            br_maptable.regValue = maptable.regValue;
+            
+            //copy archmap
+            br_archmap.regMap = archmap.regMap;
+            br_archmap.regValue = br_archmap.regValue;
+            
+            //copy freelist
+            br_freelist.num_phy_reg = freelist.num_phy_reg;
+            br_freelist.curr_free_idx = freelist.curr_free_idx;
+            br_freelist.isFree = new bool[br_freelist.num_phy_reg];
+            for(int i = 0; i < br_freelist.num_phy_reg; i++)
+            {
+                br_freelist.isFree[i] = freelist.isFree[i];
+            }
+            
+            //copy ROBtail and LSQ_tail
+            ROB_tail = ROBtail;
+            LSQ_tail = LSQtail;
+        }
+        
+        MapTable br_maptable;
+        ArchMap br_archmap;
+        FreeList br_freelist;
+        int32_t ROB_tail;
+        int32_t LSQ_tail;
+        
+    };
+    
+    BranchStack(int32_t _num) : num_entries(_num),top_br(-1) {
+        br_stack = new BS_Entry[num_entries];
+        bmask = new bool[num_entries];
+        memset(bmask, false, sizeof(bool)*(num_entries));
+    }
+    
+    ~BranchStack() {
+        if(br_stack)
+        {
+            delete[] br_stack;
+            br_stack = NULL;
+        }
+        if(bmask)
+        {
+            delete[] bmask;
+            bmask = NULL;
+        }
+    }
+    
+    void clearEntry(int32_t br_id)
+    {
+        for(int i = top_br; i >= br_id; i--)//remove nested checkpoint
+        {
+            br_stack[i].br_maptable.clear();
+            br_stack[i].br_archmap.clear();
+            br_stack[i].br_freelist.clear();
+            br_stack[i].ROB_tail = 0;
+            br_stack[i].LSQ_tail = 0;
+            
+            bmask[i] = false;
+        }
+    }
+    
+    BS_Entry* br_stack;
+    bool* bmask;
+    int32_t top_br;
+    int32_t num_entries;
+    
 };
 
 #endif
