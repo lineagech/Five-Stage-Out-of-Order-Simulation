@@ -35,7 +35,7 @@ do {\
     }\
 } while(0)
 
-static MapTable mapTable;
+MapTable mapTable;
 static FreeList freeList(64);
 static RS reservStation;
 static ROB reorderedBuffer(8);
@@ -930,6 +930,9 @@ void PipeState::pipeStageDecode() {
                 else {
                     op->reg_phy_src1 = mapTable.regMap[op->reg_src1];
                     op->reg_phy_src1_ready = mapTable.ready[op->reg_phy_src1];
+                    if (op->reg_phy_src1_ready) {
+                        op->reg_src1_value = mapTable.regValue[op->reg_phy_src1];
+                    }
                 }
             }
             else {
@@ -944,6 +947,9 @@ void PipeState::pipeStageDecode() {
                 else {
                     op->reg_phy_src2 = mapTable.regMap[op->reg_src2];
                     op->reg_phy_src2_ready = mapTable.ready[op->reg_phy_src2];
+                    if (op->reg_phy_src1_ready) {
+                        op->reg_src2_value = mapTable.regValue[op->reg_phy_src2];
+                    }
                 }
             }
             else {

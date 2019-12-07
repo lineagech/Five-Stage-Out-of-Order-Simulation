@@ -13,6 +13,7 @@
 #include "config_reader.h"
 #include "simulator.h"
 #include "util.h"
+#include "ooo_data_structures.h"
 
 /***************************************************************/
 /* Simulator.                                                  */
@@ -26,6 +27,9 @@ Simulator * simulator;
 /* Purpose: write the program to the memory                    */
 /*                                                             */
 /***************************************************************/
+
+extern MapTable mapTable;
+extern ArchMap archMap;
 
 void writeProgramToMem(uint32_t address, uint32_t value) {
 	int i;
@@ -183,7 +187,10 @@ bool getCommand() {
 
 		printf("%i %i\n", register_no, register_value);
 		simulator->pipe->REGS[register_no] = register_value;
-		break;
+		mapTable.regValue[register_no] = register_value;
+		archMap.regValue[register_no] = register_value;
+
+        break;
 
 	case 'H':
 	case 'h':
