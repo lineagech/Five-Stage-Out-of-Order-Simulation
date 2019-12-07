@@ -114,14 +114,16 @@ public:
         return next;
     }
 
-    void retire_insts() {
-        while(ROB_entries[head].ready_to_retire == true) {
+    bool retire_insts() {
+        while (ROB_entries[head].ready_to_retire == true) {
             ROB_entries[head].ready_to_retire = false;
             ROB_entries[head].op_ptr = NULL;
             occupied[head] = false;
             head++;
             if (head > num_entries) head = 1;
+            //return true;
         }
+        //return false;
     }
 
     ROB_Entry *ROB_entries;
@@ -140,6 +142,9 @@ public:
      
     LSQ(int32_t _num) : num_entries(_num), head(0), tail(0), size(0) {
         lsq_entries = (void**)malloc(sizeof(void*)*_num); 
+        for (int i = 0; i < _num; i++) {
+            lsq_entries[i] = NULL;
+        }
         lsq_ready = new bool[_num];
     }
     
@@ -148,6 +153,12 @@ public:
             return -1;
         }
         return (tail == num_entries-1) ? 0 : tail+1;
+    }
+    void retire() {
+        lsq_entries[head] = NULL;
+        lsq_ready[head] = true;
+        size--;
+        head = ((head+1) == num_entries) ? 0 : head+1;
     }
 
     void** lsq_entries;

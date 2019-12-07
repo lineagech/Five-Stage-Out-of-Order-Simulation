@@ -160,12 +160,15 @@ void PipeState::pipeCycle() {
 	for (auto it = complSet.begin(); it != complSet.end(); it++) {
         wb_op = *it;
         DEBUG_MSG("Instruction Retires: Dst R%d (Phy R%d)\n", wb_op->reg_dst, wb_op->reg_phy_dst);
+        if (wb_op->is_mem) {
+            ldstQueue.retire(); 
+        }
         pipeStageWb();
     }
     complSet.clear();
     /* Update ROB head pointer */
     reorderedBuffer.retire_insts();
-
+   
 
 	if(RUN_BIT == false)
     		return;
@@ -1022,6 +1025,7 @@ void PipeState::pipeStageDecode() {
                 ldstQueue.size++;
                 ldstQueue.tail = LSQ_avail_index;
                 ldstQueue.lsq_entries[LSQ_avail_index] = (void*)op_ptr;
+                ldstQueue.lsq_ready[LSQ_avail_index] = false;
             }
             /* Update Free list */ 
             freeList.isFree[op->reg_phy_dst] = false;
@@ -1127,26 +1131,36 @@ void PipeState::recvResp(Packet* pkt) {
 		}
 		break;
 	case PacketTypeLoad: {
-		//if pkt-type is load proceed with loading the data
-		if (((mem_op->mem_addr & ~3) == pkt->addr) && pkt->size == 4) {
+		// get op pointer from LSQ
+        Pipe_Op* op_ptr = NULL;
+        for (int i = 0; i < ldstQueue.num_entries; i++) {
+            auto tmp = ((Pipe_Op*)(ldstQueue.lsq_entries[i]));
+            if (tmp->mem_addr == pkt->addr) {
+                op_ptr = tmp;
+                break;
+            }
+        }
+        
+        //if pkt-type is load proceed with loading the data
+		if (((op_ptr->mem_addr & ~3) == pkt->addr) && pkt->size == 4) {
 			uint32_t val = *((uint32_t*) pkt->data);
 			//extract needed value
-			mem_op->reg_dst_value_ready = 1;
-			if (mem_op->opcode == OP_LW) {
-				mem_op->reg_dst_value = val;
-			} else if (mem_op->opcode == OP_LH || mem_op->opcode == OP_LHU) {
-				if (mem_op->mem_addr & 2)
+			op_ptr->reg_dst_value_ready = 1;
+			if (op_ptr->opcode == OP_LW) {
+				op_ptr->reg_dst_value = val;
+			} else if (op_ptr->opcode == OP_LH || op_ptr->opcode == OP_LHU) {
+				if (op_ptr->mem_addr & 2)
 					val = (val >> 16) & 0xFFFF;
 				else
 					val = val & 0xFFFF;
 
 				// sign-extend
-				if (mem_op->opcode == OP_LH)
+				if (op_ptr->opcode == OP_LH)
 					val |= (val & 0x8000) ? 0xFFFF8000 : 0;
 
-				mem_op->reg_dst_value = val;
-			} else if (mem_op->opcode == OP_LB || mem_op->opcode == OP_LBU) {
-				switch (mem_op->mem_addr & 3) {
+				op_ptr->reg_dst_value = val;
+			} else if (op_ptr->opcode == OP_LB || op_ptr->opcode == OP_LBU) {
+				switch (op_ptr->mem_addr & 3) {
 				case 0:
 					val = val & 0xFF;
 					break;
@@ -1162,24 +1176,35 @@ void PipeState::recvResp(Packet* pkt) {
 				}
 
 				// sign-extend
-				if (mem_op->opcode == OP_LB)
+				if (op_ptr->opcode == OP_LB)
 					val |= (val & 0x80) ? 0xFFFFFF80 : 0;
 
-				mem_op->reg_dst_value = val;
+				op_ptr->reg_dst_value = val;
                 // FIX_CHIA-HAO: 
-                mem_op->reg_phy_dst_value = val;
+                op_ptr->reg_phy_dst_value = val;
 			}
-			mem_op->readyForNextStage = true;
+			op_ptr->readyForNextStage = true;
 		}
 		break;
 	}
-	case PacketTypeStore:
-		if (mem_op->mem_addr == pkt->addr) {
-			mem_op->readyForNextStage = true;
+	case PacketTypeStore: {
+        // get op pointer from LSQ
+        Pipe_Op* op_ptr = NULL;
+        for (int i = 0; i < ldstQueue.num_entries; i++) {
+            auto tmp = ((Pipe_Op*)(ldstQueue.lsq_entries[i]));
+            if (tmp->mem_addr == pkt->addr) {
+                op_ptr = tmp;
+                break;
+            }
+        }
+        
+        if (op_ptr->mem_addr == pkt->addr) {
+			op_ptr->readyForNextStage = true;
 		} else {
 			assert(false && "Invalid store response from memory or cache");
 		}
 		break;
+    }
 	default:
 		assert(false && "Invalid response from memory or cache");
 	}
