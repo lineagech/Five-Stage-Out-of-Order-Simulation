@@ -33,6 +33,11 @@ do {\
     else if (op->subop == SUBOP_SYSCALL){\
         op->compl_done = true;\
     }\
+    op->compl_done = true;\
+    /* Delete ROB entry */ \
+    auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)]; \
+    reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true; \
+    reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op))); \
 } while(0)
 
 MapTable mapTable;
@@ -156,19 +161,23 @@ void PipeState::pipeCycle() {
 	}
     printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
     
-    // See WB as the completion statge
-	for (auto it = complSet.begin(); it != complSet.end(); it++) {
-        wb_op = *it;
-        DEBUG_MSG("Instruction Retires: Dst R%d (Phy R%d)\n", wb_op->reg_dst, wb_op->reg_phy_dst);
-        if (wb_op->is_mem) {
-            ldstQueue.retire(); 
-        }
-        pipeStageWb();
-    }
-    complSet.clear();
     /* Update ROB head pointer */
-    reorderedBuffer.retire_insts();
-   
+    Pipe_Op* head_op;
+    while ( (head_op = (Pipe_Op*)reorderedBuffer.getHead()) != NULL ) {
+        if (complSet.find(head_op) == complSet.end()) {// not found
+            break;        
+        }
+        else {
+            wb_op = head_op;
+            DEBUG_MSG("Instruction Retires: Dst R%d (Phy R%d)\n", wb_op->reg_dst, wb_op->reg_phy_dst);
+            if (wb_op->is_mem) {
+                ldstQueue.retire(); 
+            }
+            pipeStageWb();
+            complSet.erase(complSet.find(head_op));
+            assert(reorderedBuffer.retire_insts());
+        }
+    }
 
 	if(RUN_BIT == false)
     		return;
@@ -333,11 +342,7 @@ void PipeState::pipeStageWb() {
 			RUN_BIT = false;
 		}
 	}
-    /* Delete ROB entry */
-    auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)];
-    reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true;
-    reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op)));
-
+    
 
 	//free the op
 	free(op);
@@ -424,7 +429,24 @@ void PipeState::pipeStageMem() {
 	DPRINTF(DEBUG_PIPE,
 			"sending pkt from memory stage: addr = %x, size = %d, type = %d \n",
 			op->memPkt->addr, op->memPkt->size, op->memPkt->type);
-	op->waitOnPktIssue = !(data_mem->sendReq(op->memPkt));
+	
+    // Search if any older store req there, if yes, just do forwarding
+    
+    int myIndex = ldstQueue.getIndex((void*)op);
+    int curr = ldstQueue.head;
+    while (!op->mem_write && curr != myIndex) {
+        Pipe_Op* curr_op = (Pipe_Op*)(ldstQueue.lsq_entries[curr]);
+        assert(curr_op != NULL);
+        if (curr_op->mem_write && curr_op->mem_addr == op->mem_addr) {
+            memcpy(op->memPkt->data, curr_op->memPkt->data, op->memPkt->size);
+            recvResp(op->memPkt);
+            return;
+        }
+        curr = (curr == ldstQueue.num_entries) ? 0 : curr+1;
+    }
+    
+
+    op->waitOnPktIssue = !(data_mem->sendReq(op->memPkt));
 	return;
 }
 
@@ -764,6 +786,7 @@ void PipeState::pipeStageDecode() {
     
     bool no_need_free_phy_reg = false;
     for (int i = 0; i < FETCH_INST_NUM; i++) {
+        no_need_free_phy_reg = false;
         if (!op->inst_decoded_done[i]) {
             //set up info fields (source/dest regs, immediate, jump dest) as necessary
             uint32_t opcode = (op->instruction[i] >> 26) & 0x3F;
@@ -974,7 +997,7 @@ void PipeState::pipeStageDecode() {
                 reg_phy_dst = freeList.getNextFreeReg();
             }
             if (reg_phy_dst == -1 && !no_need_free_phy_reg) { 
-                continue;
+                break;
             }
             else if (reg_phy_dst == -1 && no_need_free_phy_reg){
                 // do nothing
@@ -989,7 +1012,7 @@ void PipeState::pipeStageDecode() {
             if (rs_op == INT_ALU1) {
                 if (reservStation.rs_entries[INT_ALU1].busy) {
                     if (reservStation.rs_entries[INT_ALU2].busy) {
-                        continue; 
+                        break; 
                     }
                     else {
                         rs_op = INT_ALU2;
@@ -998,19 +1021,19 @@ void PipeState::pipeStageDecode() {
             }
             else {
                 if (reservStation.rs_entries[rs_op].busy) {
-                    continue;
+                    break;
                 }
             }
             
             /* Allocate ROB */
             int ROB_avail_index = reorderedBuffer.getNextAvail();
-            if (ROB_avail_index == -1) continue;
+            if (ROB_avail_index == -1) break;
                 
             /* Allocate LSQ if needed */
             int LSQ_avail_index;    
             if (rs_op == LOAD || rs_op == STORE) {
                 if ((LSQ_avail_index=ldstQueue.getLSQAvail()) == -1) { // full
-                    continue;
+                    break;
                 }
             } 
 
@@ -1135,7 +1158,7 @@ void PipeState::recvResp(Packet* pkt) {
         Pipe_Op* op_ptr = NULL;
         for (int i = 0; i < ldstQueue.num_entries; i++) {
             auto tmp = ((Pipe_Op*)(ldstQueue.lsq_entries[i]));
-            if (tmp->mem_addr == pkt->addr) {
+            if (tmp != NULL && tmp->memPkt == pkt) {
                 op_ptr = tmp;
                 break;
             }
@@ -1192,7 +1215,7 @@ void PipeState::recvResp(Packet* pkt) {
         Pipe_Op* op_ptr = NULL;
         for (int i = 0; i < ldstQueue.num_entries; i++) {
             auto tmp = ((Pipe_Op*)(ldstQueue.lsq_entries[i]));
-            if (tmp->mem_addr == pkt->addr) {
+            if (tmp != NULL && tmp->memPkt == pkt) {
                 op_ptr = tmp;
                 break;
             }

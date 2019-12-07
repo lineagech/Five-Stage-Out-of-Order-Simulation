@@ -105,7 +105,14 @@ public:
             ROB_entries = NULL;
         }
     }
-        
+    
+    void* getHead() {
+        if (!occupied[head]) {
+            return NULL;
+        }
+        return ROB_entries[head].op_ptr;
+    }
+
     int32_t getNextAvail() {
         int32_t next = (tail==num_entries) ? 1 : tail+1;
         if (occupied[next]) {
@@ -115,15 +122,15 @@ public:
     }
 
     bool retire_insts() {
-        while (ROB_entries[head].ready_to_retire == true) {
+        if (ROB_entries[head].ready_to_retire == true) {
             ROB_entries[head].ready_to_retire = false;
             ROB_entries[head].op_ptr = NULL;
             occupied[head] = false;
             head++;
             if (head > num_entries) head = 1;
-            //return true;
+            return true;
         }
-        //return false;
+        return false;
     }
 
     ROB_Entry *ROB_entries;
@@ -140,7 +147,7 @@ class LSQ
 {
 public:
      
-    LSQ(int32_t _num) : num_entries(_num), head(0), tail(0), size(0) {
+    LSQ(int32_t _num) : num_entries(_num), head(0), tail(-1), size(0) {
         lsq_entries = (void**)malloc(sizeof(void*)*_num); 
         for (int i = 0; i < _num; i++) {
             lsq_entries[i] = NULL;
@@ -160,7 +167,15 @@ public:
         size--;
         head = ((head+1) == num_entries) ? 0 : head+1;
     }
-
+    int getIndex(void* _ptr) {
+        for (int i = 0; i < num_entries; i++) {
+            if ((uint64_t)_ptr == (uint64_t)(lsq_entries[i])) {
+                return i;           
+            }
+        }
+        return -1;
+    }
+    
     void** lsq_entries;
     bool* lsq_ready;
     int32_t num_entries;
