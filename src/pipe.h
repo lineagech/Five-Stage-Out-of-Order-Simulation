@@ -87,6 +87,8 @@ typedef struct Pipe_Op {
 
 	//shows if the operation is ready for the next stage of pipeline
 	bool readyForNextStage;
+
+	bool isExecuted;
 } Pipe_Op;
 
 /* The pipe state represents the current state of the pipeline. It holds a
@@ -111,6 +113,9 @@ public:
 	//register file state
 	uint32_t REGS[32];
 	uint32_t HI, LO;
+
+	// We use bitwise casting to convert floating-point to integer and vice versa
+	uint32_t FP_REGS[32];
 
 	//program counter in fetch stage
 	uint32_t PC;

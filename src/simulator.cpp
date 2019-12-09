@@ -100,6 +100,13 @@ void Simulator::registerDump() {
 		printf("R%d: 0x%08x\n", i, archMap.regValue[archMap.regMap[i]]);
 	}
 
+	for (i = 0; i < 32; i++) {
+		//printf("F%d: %f\n", i,
+		//		*(reinterpret_cast<float*>(&pipe->FP_REGS[i])));
+	    printf("F%d: %f\n", i,
+				*(reinterpret_cast<float*>(&archMap.regValue[archMap.regMap[i+64]])));
+    }
+
 	printf("HI: 0x%08x\n", pipe->HI);
 	printf("LO: 0x%08x\n", pipe->LO);
 	printf("Cycles: %u\n", pipe->stat_cycles);

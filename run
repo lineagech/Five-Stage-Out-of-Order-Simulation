@@ -86,7 +86,7 @@ def run(config, i):
 
 def filter_stats(out):
     lines = out.split("\n")
-    regex = re.compile("^(HI:)|(LO:)|(R\d+:)|(PC:)|(Cycles:)|(Fetched\w+:)|(Retired\w+:)|(IPC:)|(MEM\[)|(Flushes:).*$")
+    regex = re.compile("^(HI:)|(LO:)|(R\d+:)|(F\d+:)|(PC:)|(Cycles:)|(Fetched\w+:)|(Retired\w+:)|(IPC:)|(MEM\[)|(Flushes:).*$")
     out = []
     for l in lines:
         if regex.match(l):

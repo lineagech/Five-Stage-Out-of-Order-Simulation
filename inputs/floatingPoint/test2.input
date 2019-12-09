@@ -1,0 +1,5 @@
+f 0 0x3fc00000
+f 1 0x3e99999a
+go
+rdump
+q

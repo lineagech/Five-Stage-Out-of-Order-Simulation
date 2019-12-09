@@ -35,9 +35,9 @@ do {\
     }\
     op->compl_done = true;\
     /* Delete ROB entry */ \
-    auto entry_index = reorderedBuffer.entry_index_map[(void*)(op)]; \
+    auto entry_index = reorderedBuffer.entry_index_map[(int64_t)(op)]; \
     reorderedBuffer.ROB_entries[entry_index].ready_to_retire = true; \
-    reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((void*)(op))); \
+    reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((uint64_t)(op))); \
 } while(0)
 
 MapTable mapTable;
@@ -114,11 +114,18 @@ PipeState::PipeState() :
 	//initialize the register file
 	for (int i = 0; i < 32; i++) {
 		REGS[i] = 0;
-	    mapTable.regMap[i] = i;
+	    FP_REGS[i] = 0;
+        mapTable.regMap[i] = i;
         archMap.regMap[i] = i;
     }
+    
+    for (int i = 64; i < 96; i++) {
+        mapTable.regMap[i] = i;
+        archMap.regMap[i] = i;
+    }
+
     /* Initialize Map Table */
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < 128; i++) {
         mapTable.regValue[i] = 0;
         archMap.regValue[i] = 0;
         mapTable.ready[i] = true;
@@ -397,7 +404,8 @@ void PipeState::pipeStageMem() {
 	case OP_LH:
 	case OP_LHU:
 	case OP_LB:
-	case OP_LBU: {
+	case OP_LBU: 
+    case LW_FLOAT: {
 		uint8_t* data = new uint8_t[4];
 		op->memPkt = new Packet(true, false, PacketTypeLoad,
 				(op->mem_addr & ~3), 4, data, currCycle);
@@ -418,7 +426,8 @@ void PipeState::pipeStageMem() {
 		break;
 	}
 
-	case OP_SW: {
+	case OP_SW: 
+    case OP_FLOAT: {
 		uint32_t* data = new uint32_t;
 		*data = op->mem_value;
 		op->memPkt = new Packet(true, true, PacketTypeStore, (op->mem_addr), 4,
@@ -452,8 +461,11 @@ void PipeState::pipeStageMem() {
 
 void PipeState::pipeStageExecute() {
 	//if a multiply/divide is in progress, decrement cycles until value is ready
-	if (execute_op && execute_op->stall > 0)
+	int stall = 0;
+    if (execute_op && execute_op->stall > 0) {
 		execute_op->stall--;
+        execute_op = NULL;
+    }
 
 	//if downstream stall, return (and leave any input we had)
 	//if (mem_op != NULL)
@@ -467,7 +479,7 @@ void PipeState::pipeStageExecute() {
 	Pipe_Op *op = execute_op;
 
 	//read register values, stall if necessary
-	int stall = 0;
+	//int stall = 0;
 	if (op->reg_phy_src1 != -1) {
 		if (op->reg_phy_src1 == 0)
 			op->reg_src1_value = 0;
@@ -513,7 +525,8 @@ void PipeState::pipeStageExecute() {
 	//if requires a stall return without clearing stage input
 	if (stall)
 		return;
-	//execute the op
+	op->stall = 0;
+    //execute the op
 	switch (op->opcode) {
 	case OP_SPECIAL:
 		op->reg_dst_value_ready = 1;
@@ -670,6 +683,37 @@ void PipeState::pipeStageExecute() {
 			break;
 		}
 		break;
+    
+    case OP_FLOAT:
+    {
+        op->reg_dst_value_ready = 1;
+        float src1_value = *(reinterpret_cast<float*>(&op->reg_src1_value));
+        float src2_value = *(reinterpret_cast<float*>(&op->reg_src2_value));
+        float dst_value;
+        switch(op->subop) {
+            case SUBOP_FLOAT_ADD_S:
+                dst_value = src1_value + src2_value;
+                op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+                op->stall = 4;
+                break;
+            case SUBOP_FLOAT_SUB_S:
+                dst_value = src1_value - src2_value;
+                op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+                op->stall = 4;
+                break;
+            case SUBOP_FLOAT_MULT_S:
+                dst_value = src1_value * src2_value;
+                op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+                op->stall = 16;
+                break;
+            case SUBOP_FLOAT_DIV_S:
+                dst_value = src1_value / src2_value;
+                op->reg_dst_value = *(reinterpret_cast<uint32_t*>(&dst_value));
+                op->stall = 64;
+                break;
+        }
+    }
+        break;
 
 	case OP_BRSPEC:
 		switch (op->subop) {
@@ -744,12 +788,14 @@ void PipeState::pipeStageExecute() {
 	case OP_LHU:
 	case OP_LB:
 	case OP_LBU:
+    case LW_FLOAT:
 		op->mem_addr = op->reg_src1_value + op->se_imm16;
 		break;
 
 	case OP_SW:
 	case OP_SH:
 	case OP_SB:
+    case SW_FLOAT:
 		op->mem_addr = op->reg_src1_value + op->se_imm16;
 		op->mem_value = op->reg_src2_value;
 		break;
@@ -793,6 +839,9 @@ void PipeState::pipeStageDecode() {
             uint32_t rs = (op->instruction[i] >> 21) & 0x1F;    
             uint32_t rt = (op->instruction[i] >> 16) & 0x1F;
             uint32_t rd = (op->instruction[i] >> 11) & 0x1F;
+            uint32_t ft = (op->instruction[i] >> 16) & 0x1F;    
+            uint32_t fs = (op->instruction[i] >> 11) & 0x1F;
+            uint32_t fd = (op->instruction[i] >> 6) & 0x1F;
             uint32_t shamt = (op->instruction[i] >> 6) & 0x1F;
             uint32_t funct1 = (op->instruction[i] >> 0) & 0x1F;
             uint32_t funct2 = (op->instruction[i] >> 0) & 0x3F;
@@ -840,6 +889,21 @@ void PipeState::pipeStageDecode() {
                 }
                 
                 rs_op = INT_ALU1;
+
+                break;
+            
+            case OP_FLOAT:
+                assert(rs == 0x10);
+                op->reg_src1 = fs + 64;
+                op->reg_src2 = ft + 64;
+                op->reg_dst = fd + 64;
+                op->subop = funct2;
+                if (op->subop == SUBOP_FLOAT_ADD_S || op->subop == SUBOP_FLOAT_SUB_S) {
+                    rs_op = FP_ADD;
+                }
+                else if (op->subop == SUBOP_FLOAT_MULT_S || op->subop == SUBOP_FLOAT_DIV_S) {
+                    rs_op = FP_MULT;
+                }
 
                 break;
 
@@ -945,6 +1009,20 @@ void PipeState::pipeStageDecode() {
                     no_need_free_phy_reg = true;
                 }
                 break;
+            
+            case LW_FLOAT:
+            case SW_FLOAT:
+                op->is_mem = 1;
+                op->reg_src1 = rs;
+                if (opcode == LW_FLOAT) {
+                    //load
+                    op->mem_write = 0;
+                    op->reg_dst = rt + 64;
+                } else {
+                    //store
+                    op->mem_write = 1;
+                    op->reg_src2 = rt + 64;
+                }
             }
                 
             /* get src physical register */
@@ -973,7 +1051,7 @@ void PipeState::pipeStageDecode() {
                 else {
                     op->reg_phy_src2 = mapTable.regMap[op->reg_src2];
                     op->reg_phy_src2_ready = mapTable.ready[op->reg_phy_src2];
-                    if (op->reg_phy_src1_ready) {
+                    if (op->reg_phy_src2_ready) {
                         op->reg_src2_value = mapTable.regValue[op->reg_phy_src2];
                     }
                 }
@@ -1072,7 +1150,7 @@ void PipeState::pipeStageDecode() {
             reorderedBuffer.ROB_entries[ROB_avail_index].ready_to_retire = false;
             reorderedBuffer.ROB_entries[ROB_avail_index].output_reg = op->reg_phy_dst;
             reorderedBuffer.ROB_entries[ROB_avail_index].overwritten_reg = op->reg_phy_dst_overwritten;
-            reorderedBuffer.entry_index_map[op_ptr] = ROB_avail_index;
+            reorderedBuffer.entry_index_map[(int64_t)op_ptr] = ROB_avail_index;
 
             /* set this instruction is decoded done */
             op->inst_decoded_done[i] = true;
@@ -1169,7 +1247,7 @@ void PipeState::recvResp(Packet* pkt) {
 			uint32_t val = *((uint32_t*) pkt->data);
 			//extract needed value
 			op_ptr->reg_dst_value_ready = 1;
-			if (op_ptr->opcode == OP_LW) {
+			if (op_ptr->opcode == OP_LW || op_ptr->opcode == LW_FLOAT) {
 				op_ptr->reg_dst_value = val;
 			} else if (op_ptr->opcode == OP_LH || op_ptr->opcode == OP_LHU) {
 				if (op_ptr->mem_addr & 2)

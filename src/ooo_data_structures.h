@@ -140,7 +140,7 @@ public:
     int32_t tail;
     
     /* Pipe_Op* <-> index of ROB_entries */
-    std::unordered_map<void*, int> entry_index_map;
+    std::unordered_map<int64_t, int> entry_index_map;
 };
 
 class LSQ 
