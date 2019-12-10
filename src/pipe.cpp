@@ -49,6 +49,10 @@ ArchMap archMap;
 static std::set<Pipe_Op*> execSet; //execution list
 static std::set<Pipe_Op*> complSet; //completion list
 
+//Qian: branch stack
+//static BranchStack branchStack(4);
+static BranchStack branchStack;
+
 #if 1
 #define DEBUG(msg,op,i) \
 do{ \
@@ -60,7 +64,8 @@ do{ \
 
 #endif
 
-auto updateRS = [&](RS& rs, int reg, int value) {
+//auto updateRS = [&](RS& rs, int reg, int value) {
+auto updateRS = [](RS& rs, int reg, int value) {
     for (int i = 0; i < RS_OP_NUM; i++) {
         auto entry = &(rs.rs_entries[i]);
         if (entry->busy) {
@@ -153,8 +158,8 @@ PipeState::~PipeState() {
 
 void PipeState::pipeCycle() {
 	if (DEBUG_PIPE) {
-		printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
-		/*
+		/*printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
+		
         printf("DECODE: ");
 		printOp(decode_op);
 		printf("EXEC : ");
@@ -163,8 +168,8 @@ void PipeState::pipeCycle() {
 		printOp(mem_op);
 		printf("WB   : ");
 		printOp(wb_op);
-		*/
-        printf("\n");
+		
+        printf("\n");*/
 	}
     printf("\n\n----\nCycle : %lu\nPIPELINE:\n", currCycle);
     
@@ -261,49 +266,28 @@ void PipeState::pipeCycle() {
     pipeStageDecode();
 	pipeStageFetch();
 
-	//handle branch recoveries
+	//Qian: handle branch recoveries
 	if (branch_recover) {
-		DPRINTF(DEBUG_PIPE, "branch recovery: new dest %08x flush %d stages\n",
-				branch_dest, branch_flush);
+        DPRINTF(DEBUG_PIPE, "branch recovery: new dest %08x flush from %d(tail) to %d(branchID) \n",
+                branch_dest, branchStack.tail, branch_flush);
 
-		PC = branch_dest;
+        PC = branch_dest;
+        
+        reorderedBuffer.tail = branchStack.br_stack[branch_flush].ROB_tail;
+        ldstQueue.tail = branchStack.br_stack[branch_flush].LSQ_tail;
+        
+        /*mapTable = branchStack.br_stack[branch_flush].br_maptable;
+        archMap = branchStack.br_stack[branch_flush].br_archmap;
+        freeList = branchStack.br_stack[branch_flush].br_freelist;
+        
+        branchStack.clearEntries(branch_flush);
+        reservStation.clearEntries(branch_flush);*/
+        
+        branch_recover = 0;
+        branch_dest = 0;
+        branch_flush = 0;
 
-		if (branch_flush >= 1) {
-			if (fetch_op)
-				free(fetch_op);
-			fetch_op = nullptr;
-		}
-
-		if (branch_flush >= 2) {
-			if (decode_op)
-				free(decode_op);
-			decode_op = nullptr;
-		}
-
-		if (branch_flush >= 3) {
-			if (execute_op)
-				free(execute_op);
-			execute_op = nullptr;
-		}
-
-		if (branch_flush >= 4) {
-			if (mem_op)
-				free(mem_op);
-
-			mem_op = nullptr;
-		}
-
-		if (branch_flush >= 5) {
-			if (wb_op)
-				free(wb_op);
-			wb_op = nullptr;
-		}
-
-		branch_recover = 0;
-		branch_dest = 0;
-		branch_flush = 0;
-
-		stat_squash++;
+        stat_squash++;
 	}
 }
 
@@ -803,9 +787,19 @@ void PipeState::pipeStageExecute() {
 
 	//update the branch predictor metadata
 	BP->update(op->pc, op->branch_taken, op->branch_dest);
-	//handle branch recoveries at this point
+	
+    //Qian: handle branch recoveries at this point
 	if (op->branch_taken)
-		pipeRecover(3, op->branch_dest);
+    {
+        printf("Wrong prediction!\n");
+        pipeRecover(op->branch_idx, op->branch_dest);
+    }
+    else if(op->is_branch && !op->branch_taken)
+    {
+        printf("Correct prediction...\n");
+        branchStack.clearSingleEntry(op->branch_idx);
+        if(op->branch_idx == branchStack.head) branchStack.moveToNewHead(op->branch_idx);
+    }
 
     op->exec_done = true;
     DEBUG_MSG("Execute Instruction with opCode %d, reg_dst R%d\n", op->opcode, op->reg_dst);
@@ -1113,7 +1107,13 @@ void PipeState::pipeStageDecode() {
                 if ((LSQ_avail_index=ldstQueue.getLSQAvail()) == -1) { // full
                     break;
                 }
-            } 
+            }
+            
+            //Qian: Allocate branch stack
+            if(op->is_branch && branchStack.getNextAvail() == -1)//full
+            {
+                break;
+            }
 
             /* Update everything */
             Pipe_Op *op_ptr = (Pipe_Op*)malloc(sizeof(Pipe_Op));
@@ -1151,7 +1151,31 @@ void PipeState::pipeStageDecode() {
             reorderedBuffer.ROB_entries[ROB_avail_index].output_reg = op->reg_phy_dst;
             reorderedBuffer.ROB_entries[ROB_avail_index].overwritten_reg = op->reg_phy_dst_overwritten;
             reorderedBuffer.entry_index_map[(int64_t)op_ptr] = ROB_avail_index;
-
+            
+            //Qian-Update Branch Stack
+            //if(branchStack.top_br <= branchStack.num_entries-2)
+            if(op->is_branch)
+            {
+                //BS_Entry bs_entry(mapTable, archMap, freeList, reorderedBuffer.tail, ldstQueue.tail);
+                
+                int new_br = branchStack.getNextAvail();
+                //branchStack.br_stack[new_br] = bs_entry;
+                branchStack.br_stack[new_br].br_maptable = mapTable;
+                branchStack.br_stack[new_br].br_archmap = archMap;
+                branchStack.br_stack[new_br].br_freelist = freeList;
+                branchStack.br_stack[new_br].ROB_tail = reorderedBuffer.tail;
+                branchStack.br_stack[new_br].LSQ_tail = ldstQueue.tail;
+                
+                op->branch_idx = new_br;
+                branchStack.tail = new_br;
+                branchStack.bmask[new_br] = true;
+                
+                for(int i = 0; i < 4; i++)
+                {
+                    reservStation.rs_entries[rs_op].bmask[i] = branchStack.bmask[i];
+                }
+            }
+            
             /* set this instruction is decoded done */
             op->inst_decoded_done[i] = true;
             DEBUG("Instruction Decoded: \n", op_ptr, i);
@@ -1197,7 +1221,7 @@ void PipeState::pipeStageFetch() {
 	uint8_t* data = new uint8_t[4*FETCH_INST_NUM];
 	fetch_op->instFetchPkt = new Packet(true, false, PacketTypeFetch, PC, 4*FETCH_INST_NUM,
 			data, currCycle);
-	DPRINTF(DEBUG_PIPE, "sending pkt from fetch stage with addr %x \n: ",
+	DPRINTF(DEBUG_PIPE, "sending pkt from fetch stage with addr %x \n",
 			fetch_op->instFetchPkt->addr);
 	//try to send the memory request
 	fetch_op->isFetchIssued = inst_mem->sendReq(fetch_op->instFetchPkt);

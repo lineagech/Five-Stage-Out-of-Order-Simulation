@@ -24,8 +24,9 @@ public:
     class RS_Entry 
     {
     public:
-        RS_Entry(): busy(false), op_ptr(NULL), src_reg1_ready(false), src_reg2_ready(false)     
+        RS_Entry(): busy(false), op_ptr(NULL), src_reg1_ready(false), src_reg2_ready(false)
         { }
+        
         bool busy;
         void* op_ptr;
         int32_t output_reg; // T
@@ -34,8 +35,29 @@ public:
         bool src_reg1_ready;
         int32_t src_reg2;
         bool src_reg2_ready;
+        
+        //Qian-bmask
+        bool bmask[4];
     };
     int getEntryIdx();
+    
+    void clearEntries(int32_t br)
+    {
+        for (int i = 0; i < RS_OP_NUM; i++)
+        {
+            auto entry = &(rs_entries[i]);
+            if(entry->bmask[br])
+            {
+                entry->busy = false;
+                entry->op_ptr = NULL;
+                entry->src_reg1_ready = false;
+                entry->src_reg2_ready = false;
+                for(int j = 0; j < 4; j++)
+                    entry->bmask[j] = false;
+            }
+        }
+    }
+        
     RS_Entry rs_entries[RS_OP_NUM];
 };
 
@@ -49,6 +71,15 @@ public:
         regMap.clear();
         ready.clear();
         regValue.clear();
+    }
+    
+    MapTable &operator=(const MapTable &maptable)
+    {
+        if(this == &maptable) return *this;
+        regMap = maptable.regMap;
+        ready = maptable.ready;
+        regValue = maptable.regValue;
+        return *this;
     }
     
     /* logical <-> physical */
@@ -66,6 +97,14 @@ public:
     {
         regMap.clear();
         regValue.clear();
+    }
+    
+    ArchMap &operator=(const ArchMap &archmap)
+    {
+        if(this == &archmap) return *this;
+        regMap = archmap.regMap;
+        regValue = archmap.regValue;
+        return *this;
     }
     
     /* logical <-> physical */
@@ -187,7 +226,7 @@ public:
 class FreeList 
 {
 public:
-    FreeList():num_phy_reg(0),curr_free_idx(0),isFree(NULL)
+    FreeList():num_phy_reg(0),curr_free_idx(33),isFree(NULL)
     { }
     
     FreeList(int32_t _num) : num_phy_reg(_num) { 
@@ -207,12 +246,26 @@ public:
     
     void clear(){
        num_phy_reg = 0;
-       curr_free_idx = 0;
-       if (isFree) {
-           delete[] isFree;
-           isFree = NULL;
-       }
+       curr_free_idx = 33;
    }
+    
+    FreeList &operator=(const FreeList &freelist)
+    {
+        if(this == &freelist) return *this;
+        num_phy_reg = freelist.num_phy_reg;
+        curr_free_idx = freelist.curr_free_idx;
+        
+        if(isFree == NULL)
+        {
+            isFree = new bool[freelist.num_phy_reg];
+        }
+        
+        for(int i = 0; i < freelist.num_phy_reg; i++)
+        {
+            isFree[i] = freelist.isFree[i];
+        }
+        return *this;
+    }
     
     int32_t getNextFreeReg() {
         int32_t snapshot_idx = curr_free_idx;
@@ -232,85 +285,103 @@ public:
     bool* isFree;
 };
 
+class BS_Entry
+{
+public:
+    BS_Entry():ROB_tail(-1),LSQ_tail(-1)
+    { }
+    
+    /*BS_Entry(const MapTable &maptable, const ArchMap &archmap, const FreeList &freelist, int32_t ROBtail, int32_t LSQtail):ROB_tail(ROBtail),LSQ_tail(LSQtail)
+    {
+        br_maptable = maptable;
+        br_archmap = archmap;
+        br_freelist = freelist;
+    }
+    
+    BS_Entry operator=(const BS_Entry &bsEntry)
+    {
+        if(this == &bsEntry) return *this;
+        br_maptable = bsEntry.br_maptable;
+        br_archmap = bsEntry.br_archmap;
+        br_freelist = bsEntry.br_freelist;
+        ROB_tail = bsEntry.ROB_tail;
+        LSQ_tail = bsEntry.LSQ_tail;
+        return *this;
+    }*/
+    
+    MapTable br_maptable;
+    ArchMap br_archmap;
+    FreeList br_freelist;
+    int32_t ROB_tail;
+    int32_t LSQ_tail;
+    
+};
+
+
 class BranchStack
 {
 public:
-    class BS_Entry
-    {
-    public:
-        BS_Entry():ROB_tail(0),LSQ_tail(0)
-        { }
-        
-        BS_Entry(const MapTable &maptable, const ArchMap &archmap, const FreeList &freelist, int32_t ROBtail, int32_t LSQtail)
-        {
-            //copy maptable
-            br_maptable.regMap = maptable.regMap;
-            br_maptable.ready = maptable.ready;
-            br_maptable.regValue = maptable.regValue;
-            
-            //copy archmap
-            br_archmap.regMap = archmap.regMap;
-            br_archmap.regValue = br_archmap.regValue;
-            
-            //copy freelist
-            br_freelist.num_phy_reg = freelist.num_phy_reg;
-            br_freelist.curr_free_idx = freelist.curr_free_idx;
-            br_freelist.isFree = new bool[br_freelist.num_phy_reg];
-            for(int i = 0; i < br_freelist.num_phy_reg; i++)
-            {
-                br_freelist.isFree[i] = freelist.isFree[i];
-            }
-            
-            //copy ROBtail and LSQ_tail
-            ROB_tail = ROBtail;
-            LSQ_tail = LSQtail;
-        }
-        
-        MapTable br_maptable;
-        ArchMap br_archmap;
-        FreeList br_freelist;
-        int32_t ROB_tail;
-        int32_t LSQ_tail;
-        
-    };
     
-    BranchStack(int32_t _num) : num_entries(_num),top_br(-1) {
+    /*BranchStack(int32_t _num) : num_entries(_num),head(0),tail(-1) {
         br_stack = new BS_Entry[num_entries];
         bmask = new bool[num_entries];
         memset(bmask, false, sizeof(bool)*(num_entries));
-    }
-    
-    ~BranchStack() {
-        if(br_stack)
-        {
-            delete[] br_stack;
-            br_stack = NULL;
-        }
-        if(bmask)
-        {
-            delete[] bmask;
-            bmask = NULL;
-        }
-    }
-    
-    void clearEntry(int32_t br_id)
+    }*/
+    BranchStack():head(0),tail(-1)
     {
-        for(int i = top_br; i >= br_id; i--)//remove nested checkpoint
-        {
-            br_stack[i].br_maptable.clear();
-            br_stack[i].br_archmap.clear();
-            br_stack[i].br_freelist.clear();
-            br_stack[i].ROB_tail = 0;
-            br_stack[i].LSQ_tail = 0;
-            
-            bmask[i] = false;
-        }
     }
     
-    BS_Entry* br_stack;
-    bool* bmask;
-    int32_t top_br;
-    int32_t num_entries;
+    void clearEntries(int32_t br_id)
+    {
+        int i = tail;
+        while(i != br_id)
+        {
+            if(bmask[i])
+            {
+                clearSingleEntry(i);
+            }
+            i--;
+            if(i == -1) i = 3;
+        }
+        
+        clearSingleEntry(i);
+        tail = br_id;
+    }
+    
+    void clearSingleEntry(int32_t i)
+    {
+        br_stack[i].br_maptable.clear();
+        br_stack[i].br_archmap.clear();
+        br_stack[i].br_freelist.clear();
+        br_stack[i].ROB_tail = -1;
+        br_stack[i].LSQ_tail = -1;
+        
+        bmask[i] = false;
+    }
+    
+    void moveToNewHead(int32_t br)
+    {
+        while(br != tail && bmask[br])
+        {
+            br++;
+            if(br == 4) br = 0;
+        }
+        head = br;
+    }
+    
+    int32_t getNextAvail() {
+        int32_t next = (tail==3) ? 0 : tail+1;
+        if (bmask[next]) {
+            return -1;
+        }
+        return next;
+    }
+    
+    BS_Entry br_stack[4];
+    bool bmask[4];
+    int32_t head;
+    int32_t tail;
+    //int32_t num_entries;
     
 };
 

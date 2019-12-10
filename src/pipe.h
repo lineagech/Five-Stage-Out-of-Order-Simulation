@@ -71,6 +71,7 @@ typedef struct Pipe_Op {
 	int branch_cond; /* is this a conditional branch? */
 	int branch_taken; /* branch taken? (set as soon as resolved: in decode
 	 for unconditional, execute for conditional) */
+    int branch_idx;//Qian: idx in branch stack
 	int is_link; /* jump-and-link or branch-and-link inst? */
 	int link_reg; /* register to place link into? */
 	//multiplier stall info
