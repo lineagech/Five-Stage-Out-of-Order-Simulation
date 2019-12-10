@@ -172,6 +172,13 @@ public:
         return false;
     }
 
+    void backToOldTail(int old_tail) {
+        while (tail != old_tail) {
+            occupied[tail] = false;
+            tail = (tail == 1) ? num_entries : tail-1;
+        }
+    }
+
     ROB_Entry *ROB_entries;
     bool *occupied;
     int32_t num_entries;
@@ -213,6 +220,13 @@ public:
             }
         }
         return -1;
+    }
+    void backToOldTail(int old_tail) {
+       while (tail != old_tail) {
+            lsq_entries[tail] = NULL;
+            tail = (tail == 0) ? num_entries-1 : tail-1;
+            size--;
+        }
     }
     
     void** lsq_entries;

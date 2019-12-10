@@ -272,20 +272,28 @@ void PipeState::pipeCycle() {
                 branch_dest, branchStack.tail, branch_flush);
 
         PC = branch_dest;
+       
+        reorderedBuffer.backToOldTail(branchStack.br_stack[branch_flush].ROB_tail);
+        //reorderedBuffer.tail = branchStack.br_stack[branch_flush].ROB_tail;
+        if (branchStack.br_stack[branch_flush].LSQ_tail != -1) {
+            ldstQueue.backToOldTail(branchStack.br_stack[branch_flush].LSQ_tail);
+        }
+        //ldstQueue.tail = branchStack.br_stack[branch_flush].LSQ_tail;
         
-        reorderedBuffer.tail = branchStack.br_stack[branch_flush].ROB_tail;
-        ldstQueue.tail = branchStack.br_stack[branch_flush].LSQ_tail;
-        
-        /*mapTable = branchStack.br_stack[branch_flush].br_maptable;
+        mapTable = branchStack.br_stack[branch_flush].br_maptable;
         archMap = branchStack.br_stack[branch_flush].br_archmap;
         freeList = branchStack.br_stack[branch_flush].br_freelist;
         
         branchStack.clearEntries(branch_flush);
-        reservStation.clearEntries(branch_flush);*/
+        reservStation.clearEntries(branch_flush);
         
         branch_recover = 0;
         branch_dest = 0;
         branch_flush = 0;
+        
+        // make decode_op/fetch_op invalid
+        decode_op = NULL;
+        fetch_op = NULL;
 
         stat_squash++;
 	}
@@ -797,8 +805,8 @@ void PipeState::pipeStageExecute() {
     else if(op->is_branch && !op->branch_taken)
     {
         printf("Correct prediction...\n");
-        branchStack.clearSingleEntry(op->branch_idx);
         if(op->branch_idx == branchStack.head) branchStack.moveToNewHead(op->branch_idx);
+        branchStack.clearSingleEntry(op->branch_idx);
     }
 
     op->exec_done = true;
@@ -908,12 +916,12 @@ void PipeState::pipeStageDecode() {
                 op->reg_src2 = rt;
                 op->is_branch = 1;
                 op->branch_cond = 1; /* conditional branch */
-                op->branch_dest = op->pc + 4 + (se_imm16 << 2);
+                op->branch_dest = op->pc + i*4 + 4 + (se_imm16 << 2);
                 op->subop = rt;
                 if (rt == BROP_BLTZAL || rt == BROP_BGEZAL) {
                     /* link reg */
                     op->reg_dst = 31;
-                    op->reg_dst_value = op->pc + 4;
+                    op->reg_dst_value = op->pc + i*4 + 4;
                     op->reg_dst_value_ready = 1;
                 }
 
@@ -923,7 +931,7 @@ void PipeState::pipeStageDecode() {
 
             case OP_JAL:
                 op->reg_dst = 31;
-                op->reg_dst_value = op->pc + 4;
+                op->reg_dst_value = op->pc + i*4 + 4;
                 op->reg_dst_value_ready = 1;
                 op->branch_taken = 1;
                 //fallthrough
@@ -931,7 +939,7 @@ void PipeState::pipeStageDecode() {
                 op->is_branch = 1;
                 op->branch_cond = 0;
                 op->branch_taken = 1;
-                op->branch_dest = (op->pc & 0xF0000000) | targ;
+                op->branch_dest = ((op->pc+i*4) & 0xF0000000) | targ;
                 
                 rs_op = INT_ALU1;
                 no_need_free_phy_reg = true;
@@ -945,7 +953,7 @@ void PipeState::pipeStageDecode() {
                 //ordinary conditional branches (resolved after execute)
                 op->is_branch = 1;
                 op->branch_cond = 1;
-                op->branch_dest = op->pc + 4 + (se_imm16 << 2);
+                op->branch_dest = op->pc + i*4 + 4 + (se_imm16 << 2);
                 op->reg_src1 = rs;
                 op->reg_src2 = rt;
                 
@@ -1154,7 +1162,7 @@ void PipeState::pipeStageDecode() {
             
             //Qian-Update Branch Stack
             //if(branchStack.top_br <= branchStack.num_entries-2)
-            if(op->is_branch)
+            if(op_ptr->is_branch)
             {
                 //BS_Entry bs_entry(mapTable, archMap, freeList, reorderedBuffer.tail, ldstQueue.tail);
                 
@@ -1166,7 +1174,7 @@ void PipeState::pipeStageDecode() {
                 branchStack.br_stack[new_br].ROB_tail = reorderedBuffer.tail;
                 branchStack.br_stack[new_br].LSQ_tail = ldstQueue.tail;
                 
-                op->branch_idx = new_br;
+                op_ptr->branch_idx = new_br;
                 branchStack.tail = new_br;
                 branchStack.bmask[new_br] = true;
                 
