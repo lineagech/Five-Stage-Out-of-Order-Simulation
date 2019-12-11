@@ -264,7 +264,7 @@ void PipeState::pipeCycle() {
         execute_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
         
         /* should not be executed before */
-        assert(!execute_op->exec_done);
+        //assert(!execute_op->exec_done);
         if (execute_op->is_branch && branch_recover) {
             //reservStation.rs_entries[i].busy = false;
             continue;
@@ -273,6 +273,9 @@ void PipeState::pipeCycle() {
         
         if (i == LOAD || i == STORE) {
             mem_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
+            auto another_entry = (i == LOAD) ? &(reservStation.rs_entries[STORE]) : &(reservStation.rs_entries[LOAD]); 
+            if (another_entry->busy && mem_op->pc > ((Pipe_Op*)(another_entry->op_ptr))->pc)
+                continue;
             pipeStageMem();
         }
         /* Free the entry */
@@ -447,13 +450,15 @@ void PipeState::pipeStageMem() {
 		*data = op->mem_value & 0xFF;
 		op->memPkt = new Packet(true, true, PacketTypeStore, (op->mem_addr), 1,
 				data, currCycle);
-		break;
+		op->mem_size = 1;
+        break;
 	}
 	case OP_SH: {
 		uint16_t* data = new uint16_t;
 		*data = op->mem_value & 0xFFFF;
 		op->memPkt = new Packet(true, true, PacketTypeStore, (op->mem_addr), 2,
 				(uint8_t*) data, currCycle);
+		op->mem_size = 2;
 		break;
 	}
 
@@ -463,6 +468,7 @@ void PipeState::pipeStageMem() {
 		*data = op->mem_value;
 		op->memPkt = new Packet(true, true, PacketTypeStore, (op->mem_addr), 4,
 				(uint8_t*) data, currCycle);
+		op->mem_size = 4;
 		break;
 	}
 	}
@@ -477,7 +483,10 @@ void PipeState::pipeStageMem() {
     while (!op->mem_write && curr != myIndex) {
         Pipe_Op* curr_op = (Pipe_Op*)(ldstQueue.lsq_entries[curr]);
         assert(curr_op != NULL);
-        if (curr_op->mem_write && curr_op->mem_addr == op->mem_addr) {
+        
+        auto overlapped = (op->mem_addr < curr_op->mem_addr+4) && (op->mem_addr+op->mem_size > curr_op->mem_addr);
+
+        if (curr_op->mem_write && overlapped/*curr_op->mem_addr == op->mem_addr*/) {
             if (curr_op->memPkt->data == NULL) break;
             memcpy(op->memPkt->data, curr_op->memPkt->data, op->memPkt->size);
             recvResp(op->memPkt);

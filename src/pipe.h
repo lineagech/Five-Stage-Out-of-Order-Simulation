@@ -59,7 +59,8 @@ typedef struct Pipe_Op {
 	//memory access information
 	int is_mem; /* is this a load/store? */
 	uint32_t mem_addr; /* address if applicable */
-	int mem_write; /* is this a write to memory? */
+	uint32_t mem_size;
+    int mem_write; /* is this a write to memory? */
 	uint32_t mem_value; /* value loaded from memory or to be written to memory */
 
 	//register destination information
@@ -103,6 +104,9 @@ typedef struct Pipe_Op {
  * and the stage must not overwrite its output (otherwise an instruction would
  * be lost).
  */
+
+#define regHI 256
+#define regLO 257
 
 class PipeState: public BaseObject {
 public:
