@@ -889,7 +889,10 @@ void PipeState::pipeStageDecode() {
                     op->branch_cond = 0;
                     no_need_free_phy_reg = true;
                 }
-                
+                if (rd == 0) {
+                    no_need_free_phy_reg = true;
+                }
+                 
                 rs_op = INT_ALU1;
 
                 break;
