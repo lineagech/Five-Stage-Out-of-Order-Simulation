@@ -280,8 +280,8 @@ void PipeState::pipeCycle() {
         }
         //ldstQueue.tail = branchStack.br_stack[branch_flush].LSQ_tail;
         
-        mapTable = branchStack.br_stack[branch_flush].br_maptable;
-        archMap = branchStack.br_stack[branch_flush].br_archmap;
+        //mapTable = branchStack.br_stack[branch_flush].br_maptable;
+        //archMap = branchStack.br_stack[branch_flush].br_archmap;
         freeList = branchStack.br_stack[branch_flush].br_freelist;
         
         branchStack.clearEntries(branch_flush);
@@ -1074,7 +1074,12 @@ void PipeState::pipeStageDecode() {
             
             int reg_phy_dst;
             if (no_need_free_phy_reg) {
-                reg_phy_dst = -1;
+                if (op->reg_dst == 31) {
+                    reg_phy_dst = 31;
+                }
+                else {
+                    reg_phy_dst = -1;
+                }
             }
             else {
                 reg_phy_dst = freeList.getNextFreeReg();
@@ -1098,6 +1103,9 @@ void PipeState::pipeStageDecode() {
                         break; 
                     }
                     else {
+                        if (((Pipe_Op*)reservStation.rs_entries[INT_ALU1].op_ptr)->subop == SUBOP_JALR) {
+                            break;
+                        }
                         rs_op = INT_ALU2;
                     }
                 }
