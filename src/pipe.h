@@ -40,6 +40,9 @@ typedef struct Pipe_Op {
     bool reg_phy_src2_ready;
     bool exec_done;
     bool compl_done;
+    
+    bool ToldReady;
+    int ToldValue;
 
     //decoded opcode and subopcode fields
 	int opcode, subop;

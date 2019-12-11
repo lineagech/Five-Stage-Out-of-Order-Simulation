@@ -328,7 +328,7 @@ public:
     FreeList br_freelist;
     int32_t ROB_tail;
     int32_t LSQ_tail;
-    
+    int32_t ROB_index; 
 };
 
 

@@ -189,6 +189,9 @@ void PipeState::pipeCycle() {
             complSet.erase(complSet.find(head_op));
             assert(reorderedBuffer.retire_insts());
         }
+        if (RUN_BIT == false) {
+            break;
+        }
     }
 
 	if(RUN_BIT == false)
@@ -252,6 +255,10 @@ void PipeState::pipeCycle() {
         
         /* should not be executed before */
         assert(!execute_op->exec_done);
+        if (execute_op->is_branch && branch_recover) {
+            //reservStation.rs_entries[i].busy = false;
+            continue;
+        }
         pipeStageExecute();
         
         if (i == LOAD || i == STORE) {
@@ -273,16 +280,38 @@ void PipeState::pipeCycle() {
 
         PC = branch_dest;
        
-        reorderedBuffer.backToOldTail(branchStack.br_stack[branch_flush].ROB_tail);
+        //reorderedBuffer.backToOldTail(branchStack.br_stack[branch_flush].ROB_tail);
         //reorderedBuffer.tail = branchStack.br_stack[branch_flush].ROB_tail;
         if (branchStack.br_stack[branch_flush].LSQ_tail != -1) {
-            ldstQueue.backToOldTail(branchStack.br_stack[branch_flush].LSQ_tail);
+            //ldstQueue.backToOldTail(branchStack.br_stack[branch_flush].LSQ_tail);
         }
         //ldstQueue.tail = branchStack.br_stack[branch_flush].LSQ_tail;
         
         //mapTable = branchStack.br_stack[branch_flush].br_maptable;
         //archMap = branchStack.br_stack[branch_flush].br_archmap;
         freeList = branchStack.br_stack[branch_flush].br_freelist;
+        /* RollBack Instructions younger than the branch */
+        while (reorderedBuffer.tail != branchStack.br_stack[branch_flush].ROB_index) {
+            auto regT = reorderedBuffer.ROB_entries[reorderedBuffer.tail].output_reg;
+            auto regTold = reorderedBuffer.ROB_entries[reorderedBuffer.tail].overwritten_reg;
+            auto archT = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->reg_dst;
+            /* Restore mapTable back */
+            mapTable.regMap[archT] = regTold;
+            mapTable.ready[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldReady;
+            mapTable.regValue[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldValue;
+
+            DEBUG_MSG("Restore ROB (pc %x) archReg R%d (Phy R%d -> Phy R%d)\n", 
+                        ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->pc, 
+                        archT,
+                        regT,
+                        regTold);
+
+            reorderedBuffer.occupied[reorderedBuffer.tail] = false;
+            reorderedBuffer.tail--;
+            if (reorderedBuffer.tail == 0) {
+                reorderedBuffer.tail = reorderedBuffer.num_entries;
+            }
+        }
         
         branchStack.clearEntries(branch_flush);
         reservStation.clearEntries(branch_flush);
@@ -797,9 +826,9 @@ void PipeState::pipeStageExecute() {
 	BP->update(op->pc, op->branch_taken, op->branch_dest);
 	
     //Qian: handle branch recoveries at this point
-	if (op->branch_taken)
+	if (op->is_branch && op->branch_taken)
     {
-        printf("Wrong prediction!\n");
+        printf("Inst (PC %x) Wrong prediction, go to PC %x!\n", op->pc, op->branch_dest);
         pipeRecover(op->branch_idx, op->branch_dest);
     }
     else if(op->is_branch && !op->branch_taken)
@@ -810,7 +839,7 @@ void PipeState::pipeStageExecute() {
     }
 
     op->exec_done = true;
-    DEBUG_MSG("Execute Instruction with opCode %d, reg_dst R%d\n", op->opcode, op->reg_dst);
+    DEBUG_MSG("Execute Instruction (pc %x) with opCode %d, reg_dst R%d\n", op->pc, op->opcode, op->reg_dst);
 
 	//remove from upstream stage and place in downstream stage
 	execute_op = NULL;
@@ -835,6 +864,7 @@ void PipeState::pipeStageDecode() {
     bool no_need_free_phy_reg = false;
     for (int i = 0; i < FETCH_INST_NUM; i++) {
         no_need_free_phy_reg = false;
+        op->is_branch = false;
         if (!op->inst_decoded_done[i]) {
             //set up info fields (source/dest regs, immediate, jump dest) as necessary
             uint32_t opcode = (op->instruction[i] >> 26) & 0x3F;
@@ -1094,8 +1124,17 @@ void PipeState::pipeStageDecode() {
                //op->reg_phy_dst_overwritten = archMap.regMap[op->reg_dst];
                op->reg_phy_dst_overwritten = mapTable.regMap[op->reg_dst];
                op->reg_phy_dst = reg_phy_dst;
+               op->ToldReady = mapTable.ready[op->reg_phy_dst_overwritten];
+               op->ToldValue = mapTable.regValue[op->reg_phy_dst_overwritten];
             }
-
+            
+            /*
+            if ( reservStation.rs_entries[INT_ALU1].busy && 
+                    ((Pipe_Op*)reservStation.rs_entries[INT_ALU1].op_ptr)->is_branch) {
+                break;
+            }
+            */
+    
             /* Allocate RS */
             if (rs_op == INT_ALU1) {
                 if (reservStation.rs_entries[INT_ALU1].busy) {
@@ -1103,9 +1142,10 @@ void PipeState::pipeStageDecode() {
                         break; 
                     }
                     else {
-                        if (((Pipe_Op*)reservStation.rs_entries[INT_ALU1].op_ptr)->subop == SUBOP_JALR) {
-                            break;
-                        }
+                        //if (((Pipe_Op*)reservStation.rs_entries[INT_ALU1].op_ptr)->subop == SUBOP_JALR) {
+                        //    break;
+                        //}
+                        //if (op->is_branch) break;
                         rs_op = INT_ALU2;
                     }
                 }
@@ -1188,6 +1228,8 @@ void PipeState::pipeStageDecode() {
                 op_ptr->branch_idx = new_br;
                 branchStack.tail = new_br;
                 branchStack.bmask[new_br] = true;
+
+                branchStack.br_stack[new_br].ROB_index = ROB_avail_index;
             }
             
             for(int i = 0; i < 4; i++)
