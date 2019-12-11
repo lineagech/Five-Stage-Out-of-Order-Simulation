@@ -359,7 +359,7 @@ public:
         }
         
         clearSingleEntry(i);
-        tail = br_id;
+        tail = br_id-1;
     }
     
     void clearSingleEntry(int32_t i)
@@ -381,6 +381,11 @@ public:
             if(br == 4) br = 0;
         }
         head = br;
+        
+        if(head == tail && !bmask[head])
+        {
+            head = 0;
+        }
     }
     
     int32_t getNextAvail() {
