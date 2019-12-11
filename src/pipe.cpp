@@ -16,6 +16,7 @@
 #include "util.h"
 
 #include "ooo_data_structures.h"
+#include <unordered_set>
 
 #define OP_DEC_DONE(op) (op->inst_decoded_done[0] && op->inst_decoded_done[1] && op->inst_decoded_done[2] && op->inst_decoded_done[3]) 
 #define OP_COMPL(op) \
@@ -40,6 +41,7 @@ do {\
     reorderedBuffer.entry_index_map.erase(reorderedBuffer.entry_index_map.find((uint64_t)(op))); \
 } while(0)
 
+
 MapTable mapTable;
 static FreeList freeList(64);
 static RS reservStation;
@@ -48,6 +50,7 @@ static LSQ ldstQueue(4);
 ArchMap archMap;
 static std::set<Pipe_Op*> execSet; //execution list
 static std::set<Pipe_Op*> complSet; //completion list
+std::unordered_set<int> trulyUsedReg;
 
 //Qian: branch stack
 //static BranchStack branchStack(4);
@@ -122,11 +125,13 @@ PipeState::PipeState() :
 	    FP_REGS[i] = 0;
         mapTable.regMap[i] = i;
         archMap.regMap[i] = i;
+        //freeList.isFree[i] = false;
     }
     
     for (int i = 64; i < 96; i++) {
         mapTable.regMap[i] = i;
         archMap.regMap[i] = i;
+        //freeList.isFree[i] = false;
     }
 
     /* Initialize Map Table */
@@ -182,6 +187,11 @@ void PipeState::pipeCycle() {
         else {
             wb_op = head_op;
             DEBUG_MSG("Instruction (pc: %x) Retires: Dst R%d (Phy R%d)\n", wb_op->pc, wb_op->reg_dst, wb_op->reg_phy_dst);
+            
+            trulyUsedReg.insert(wb_op->reg_dst);
+            trulyUsedReg.insert(wb_op->reg_src1);
+            trulyUsedReg.insert(wb_op->reg_src2);
+            
             if (wb_op->is_mem) {
                 ldstQueue.retire(); 
             }
@@ -468,11 +478,12 @@ void PipeState::pipeStageMem() {
         Pipe_Op* curr_op = (Pipe_Op*)(ldstQueue.lsq_entries[curr]);
         assert(curr_op != NULL);
         if (curr_op->mem_write && curr_op->mem_addr == op->mem_addr) {
+            if (curr_op->memPkt->data == NULL) break;
             memcpy(op->memPkt->data, curr_op->memPkt->data, op->memPkt->size);
             recvResp(op->memPkt);
             return;
         }
-        curr = (curr == ldstQueue.num_entries) ? 0 : curr+1;
+        curr = (curr+1 == ldstQueue.num_entries) ? 0 : curr+1;
     }
     
 
@@ -1326,7 +1337,8 @@ void PipeState::recvResp(Packet* pkt) {
                 break;
             }
         }
-        
+        assert(op_ptr != NULL);
+
         //if pkt-type is load proceed with loading the data
 		if (((op_ptr->mem_addr & ~3) == pkt->addr) && pkt->size == 4) {
 			uint32_t val = *((uint32_t*) pkt->data);

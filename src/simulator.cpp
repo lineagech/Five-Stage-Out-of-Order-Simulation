@@ -87,7 +87,9 @@ uint32_t Simulator::readMemForDump(uint32_t address) {
 
 // FIX_CHIA-HAO
 #include "ooo_data_structures.h"
+#include <unordered_set>
 extern ArchMap archMap;
+extern std::unordered_set<int> trulyUsedReg;
 
 void Simulator::registerDump() {
 	int i;
@@ -97,7 +99,11 @@ void Simulator::registerDump() {
 	//update this for ./run script so it will return the correct value for register
 	for (i = 0; i < 32; i++) {
 		//printf("R%d: 0x%08x\n", i, pipe->REGS[i]);
-		printf("R%d: 0x%08x\n", i, archMap.regValue[archMap.regMap[i]]);
+		//printf("R%d: Phy R%d\n", i, archMap.regMap[i]);
+		if (trulyUsedReg.find(i) == trulyUsedReg.end())
+            printf("R%d: 0x%08x\n", i, 0);
+        else
+            printf("R%d: 0x%08x\n", i, archMap.regValue[archMap.regMap[i]]);
 	}
 
 	for (i = 0; i < 32; i++) {

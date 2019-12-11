@@ -14,6 +14,7 @@
 #include "simulator.h"
 #include "util.h"
 #include "ooo_data_structures.h"
+#include <unordered_set>
 
 /***************************************************************/
 /* Simulator.                                                  */
@@ -30,6 +31,7 @@ Simulator * simulator;
 
 extern MapTable mapTable;
 extern ArchMap archMap;
+extern std::unordered_set<int> trulyUsedReg;
 
 void writeProgramToMem(uint32_t address, uint32_t value) {
 	int i;
@@ -190,6 +192,8 @@ bool getCommand() {
 		simulator->pipe->REGS[register_no] = register_value;
 		mapTable.regValue[register_no] = register_value;
 		archMap.regValue[register_no] = register_value;
+		mapTable.ready[register_no] = true;
+        trulyUsedReg.insert(register_no);
 
         break;
 
