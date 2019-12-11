@@ -1180,11 +1180,11 @@ void PipeState::pipeStageDecode() {
                 op_ptr->branch_idx = new_br;
                 branchStack.tail = new_br;
                 branchStack.bmask[new_br] = true;
-                
-                for(int i = 0; i < 4; i++)
-                {
-                    reservStation.rs_entries[rs_op].bmask[i] = branchStack.bmask[i];
-                }
+            }
+            
+            for(int i = 0; i < 4; i++)
+            {
+                reservStation.rs_entries[rs_op].bmask[i] = branchStack.bmask[i];
             }
             
             /* set this instruction is decoded done */
