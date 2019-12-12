@@ -43,6 +43,7 @@ typedef struct Pipe_Op {
     
     bool ToldReady;
     int ToldValue;
+    int oldTimeStamp;
 
     //decoded opcode and subopcode fields
 	int opcode, subop;

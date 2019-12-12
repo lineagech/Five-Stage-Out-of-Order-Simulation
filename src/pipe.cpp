@@ -25,6 +25,7 @@ do {\
     if (op->reg_phy_dst != -1) {\
         mapTable.ready[op->reg_phy_dst] = true; \
         mapTable.regValue[op->reg_phy_dst] = op->reg_dst_value; \
+        mapTable.timeStamp[op->reg_phy_dst] = currCycle;\
         printf("pc: %x Completion R%d (Phy R%d) : %d \n", op->pc, op->reg_dst, op->reg_phy_dst, op->reg_dst_value);\
         /* Update the value to RS */ \
         updateRS(reservStation, op->reg_phy_dst, op->reg_dst_value); \
@@ -188,10 +189,12 @@ void PipeState::pipeCycle() {
             wb_op = head_op;
             DEBUG_MSG("Instruction (pc: %x) Retires: Dst R%d (Phy R%d)\n", wb_op->pc, wb_op->reg_dst, wb_op->reg_phy_dst);
             
-            trulyUsedReg.insert(wb_op->reg_dst);
-            trulyUsedReg.insert(wb_op->reg_src1);
-            trulyUsedReg.insert(wb_op->reg_src2);
-            
+            if (!(wb_op->opcode == OP_SPECIAL && wb_op->subop == SUBOP_SYSCALL)) {
+                trulyUsedReg.insert(wb_op->reg_dst);
+                trulyUsedReg.insert(wb_op->reg_src1);
+                trulyUsedReg.insert(wb_op->reg_src2);
+            }
+
             if (wb_op->is_mem) {
                 ldstQueue.retire(); 
             }
@@ -261,6 +264,25 @@ void PipeState::pipeCycle() {
                 continue;
             }
         }
+        if (i == INT_ALU1 || i == INT_ALU2) {
+            auto this_entry = &(reservStation.rs_entries[i]);
+            auto another_entry = (i == INT_ALU1) ? &(reservStation.rs_entries[INT_ALU2]) : &(reservStation.rs_entries[INT_ALU1]); 
+            auto this_op = (Pipe_Op*)(this_entry->op_ptr);       
+            auto another_op = (Pipe_Op*)(another_entry->op_ptr);     
+            if ((this_op->opcode == OP_SPECIAL && this_op->subop == SUBOP_MFHI) || 
+                    (another_op && another_op->opcode == OP_SPECIAL && another_op->subop == SUBOP_MTHI)) {
+                if (this_op->pc > another_op->pc) {
+                    continue;
+                }
+            }
+            else if ((this_op->opcode == OP_SPECIAL && this_op->subop == SUBOP_MFLO) || 
+                    (another_op && another_op->opcode == OP_SPECIAL && another_op->subop == SUBOP_MTLO)) {
+                if (this_op->pc > another_op->pc) {
+                    continue;
+                }
+            }
+        }
+
         execute_op = (Pipe_Op*)reservStation.rs_entries[i].op_ptr;
         
         /* should not be executed before */
@@ -309,9 +331,13 @@ void PipeState::pipeCycle() {
             auto regTold = reorderedBuffer.ROB_entries[reorderedBuffer.tail].overwritten_reg;
             auto archT = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->reg_dst;
             /* Restore mapTable back */
-            mapTable.regMap[archT] = regTold;
-            mapTable.ready[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldReady;
-            mapTable.regValue[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldValue;
+            if (archT != 0) {
+                mapTable.regMap[archT] = regTold;
+            }
+            if (mapTable.timeStamp[regTold] <= ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->oldTimeStamp) {
+                mapTable.ready[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldReady;
+                mapTable.regValue[regTold] = ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->ToldValue;
+            }
 
             DEBUG_MSG("Restore ROB (pc %x) archReg R%d (Phy R%d -> Phy R%d)\n", 
                         ((Pipe_Op*)(reorderedBuffer.ROB_entries[reorderedBuffer.tail].op_ptr))->pc, 
@@ -1146,6 +1172,7 @@ void PipeState::pipeStageDecode() {
                op->reg_phy_dst = reg_phy_dst;
                op->ToldReady = mapTable.ready[op->reg_phy_dst_overwritten];
                op->ToldValue = mapTable.regValue[op->reg_phy_dst_overwritten];
+               op->oldTimeStamp = mapTable.timeStamp[op->reg_phy_dst_overwritten];
             }
             
             /*
@@ -1397,14 +1424,16 @@ void PipeState::recvResp(Packet* pkt) {
 	case PacketTypeStore: {
         // get op pointer from LSQ
         Pipe_Op* op_ptr = NULL;
-        for (int i = 0; i < ldstQueue.num_entries; i++) {
+        auto i = ldstQueue.head;
+        for (int k = 0; k < ldstQueue.size; k++) {
             auto tmp = ((Pipe_Op*)(ldstQueue.lsq_entries[i]));
-            if (tmp != NULL && tmp->memPkt == pkt) {
+            if (tmp != NULL && tmp->mem_addr == pkt->addr) {
                 op_ptr = tmp;
                 break;
             }
+            i = (i == ldstQueue.num_entries) ? 1 : i+1;
         }
-        
+        DEBUG_MSG("Resp Pkt with addr %x TypeStore\n", pkt->addr); 
         if (op_ptr->mem_addr == pkt->addr) {
 			op_ptr->readyForNextStage = true;
 		} else {

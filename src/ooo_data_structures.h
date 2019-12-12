@@ -88,6 +88,8 @@ public:
     std::unordered_map<int,bool> ready;
     /* physical reg : value */
     std::unordered_map<int,int> regValue;
+    /* timestamp */
+    std::unordered_map<int,int> timeStamp;
 };
 
 class ArchMap
